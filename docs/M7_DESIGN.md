@@ -1,6 +1,6 @@
 # M7 — Prediction, Change & Experiment Tracking — Design
 
-**Status:** DESIGN — approved for implementation with the owner's P1–P3 decisions (§15). No runtime code accompanies this document.
+**Status:** DESIGN — approved with the owner's P1–P3 decisions (§15); implemented on `feature/m7-tracking` — see `docs/M7_IMPLEMENTATION_NOTES.md` for decisions and deviations.
 **Canonical parent:** `docs/MASTER.md` — §3 loop, §21 Decision Engine, §22 Evidence & Confidence, §32 Caching, §34 Governance, **§38 Time-to-Impact (38.1–38.11)**, §41 M7–M9, §43 rules, §46 freshness. Where this document and MASTER differ, MASTER wins. §16 of this document lists the clarifications proposed for MASTER.
 **Builds on:** M4 (`seoPages`, `topicIntelligence`, `intelligenceRuns`, immutable `baselines`), M5 (`opportunities`, `impactInputs`), M6 (`decisions`, `searchIntents`, owner review, run safety) — all live-validated on Hagar.
 **Repository state at design time:** `main` @ `d5d1f94` (M6 merged and validated; #36 fixed).
