@@ -1,6 +1,6 @@
 # M7 — Implementation Brief (for after design approval)
 
-Contract for implementing `docs/M7_DESIGN.md`. **Not started.** Implementation begins only after the owner approves the design and answers policy questions P1–P3 (design §15).
+Contract for implementing `docs/M7_DESIGN.md`. Owner decisions P1–P3 are recorded in design §15: P1 accepted actionable decisions only; P2 a hold release lasts for the experiment; P3 the before-snapshot comes only from demonstrably pre-change stored evidence, and is never produced by a post-change crawl.
 
 ## Order of work (incremental; each step has passing tests before the next)
 

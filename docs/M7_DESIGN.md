@@ -1,6 +1,6 @@
 # M7 — Prediction, Change & Experiment Tracking — Design
 
-**Status:** DESIGN ONLY. No runtime code accompanies this document.
+**Status:** DESIGN — approved for implementation with the owner's P1–P3 decisions (§15). No runtime code accompanies this document.
 **Canonical parent:** `docs/MASTER.md` — §3 loop, §21 Decision Engine, §22 Evidence & Confidence, §32 Caching, §34 Governance, **§38 Time-to-Impact (38.1–38.11)**, §41 M7–M9, §43 rules, §46 freshness. Where this document and MASTER differ, MASTER wins. §16 of this document lists the clarifications proposed for MASTER.
 **Builds on:** M4 (`seoPages`, `topicIntelligence`, `intelligenceRuns`, immutable `baselines`), M5 (`opportunities`, `impactInputs`), M6 (`decisions`, `searchIntents`, owner review, run safety) — all live-validated on Hagar.
 **Repository state at design time:** `main` @ `d5d1f94` (M6 merged and validated; #36 fixed).
@@ -467,7 +467,7 @@ Verification is **change tracking**, not outcome. It reads no performance metric
 The reference is stored as `{baselineId, targetType, targetId}` (the composite reference anticipated in `captureBaseline`).
 
 **If no such baseline exists:**
-- **At record time**, and only if the latest completed intelligence run finished **before** `implementationDate`, the endpoint captures a new immutable baseline through the existing `captureBaseline` (Firestore-only, provider-free) and links it as `linked`, `capturedAtRecording: true`.
+- **At record time** (P3 step 2), and only if the latest completed intelligence run finished **before** the start of the implementation date (business time zone), the endpoint creates a new immutable baseline from that run's stored data through the existing `captureBaseline` (Firestore-only, provider-free, no crawl) and links it as `linked`, `capturedAtRecording: true`. A crawl is never triggered to produce a before-snapshot.
 - Otherwise it is `missing` (no clean pre-change state exists) or `contaminated` (only post-change data exists). The prediction records a critical gap, and M8 must treat attribution as low.
 
 **After-snapshot.** It is `pending` at creation and never fabricated. M8 captures a new immutable baseline after `start + B.min` and attaches it. Baselines are never mutated; M7 and M8 only add references.
@@ -747,11 +747,16 @@ Tests use the index-enforcing fake Firestore, are deterministic, and make no net
 | A5 | Business-impact stage C is measurable only at site level (trafficSnapshots). | No page-level GA4 yet. |
 | A6 | Crawl verification compares title, H1/H2, canonical, indexability, robots, sitemap, internal links, structured data and page existence. Body text and meta description are not compared in v1. | `seoPages` stores no body text. |
 
-### Policy questions (not invented here — owner decision before implementation)
+### Policy decisions (owner-approved on PR #42, 2026-10-11)
 
-- **P1.** Should the owner be able to record an implementation for a **pending** (not yet accepted) decision? The design says no (accept first).
-- **P2.** Should the owner hold release be time-limited or permanent for the experiment? The design says permanent for that experiment, recorded as interference.
-- **P3.** Should M7 auto-capture a baseline at recording when one is missing and the latest analysis is clean (§7)? The design says yes (provider-free, immutable).
+- **P1 — NO.** An implementation can be recorded only for an owner-**accepted** actionable decision (IMPROVE, CREATE, CONSOLIDATE). Pending, deferred, rejected, WAIT, MONITOR and REJECT decisions can never silently become implemented. A separate workflow for unplanned/manual changes is out of M7 scope.
+- **P2 — YES.** An explicit owner hold release is durable for the lifetime of that experiment: M6 does not recreate the same hold on later runs while the experiment stays open. The release ends when the experiment closes. A materially new change that opens a new experiment is evaluated independently.
+- **P3 — YES, strictly pre-change.** At implementation-record time the before-snapshot is chosen in this order:
+  1. an existing immutable baseline whose source analysis **completed before the implementation timestamp** and which contains the target;
+  2. otherwise, a new immutable before-snapshot created **only from the latest qualifying pre-change analysis/data already stored**. "Qualifying" means the latest completed intelligence run finished before the implementation timestamp, and the stored state still is that run's state — no later run has overwritten it.
+  3. otherwise: no before-snapshot is fabricated. It is marked `missing` (no pre-change evidence) or `contaminated` (only post-change evidence exists), and prediction confidence is lowered.
+
+  **Never** perform a post-change crawl and call it a before-snapshot. Because implementations may be recorded days after the change went live, the "implementation timestamp" for this comparison is the start of the implementation date in the business time zone (the strictest reading of a calendar date).
 
 ### Backlog items discovered while studying the repo (added to the project backlog)
 
