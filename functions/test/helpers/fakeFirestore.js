@@ -14,7 +14,11 @@
 //     a matching direction.
 //
 // A query without a matching index throws FAILED_PRECONDITION, like
-// Firestore. `failNextQueries(n)` simulates an outage.
+// Firestore. `failNextQueries(n)` simulates an outage; `failWritesAfter(n)`
+// lets n write operations succeed and fails every later one (a batch
+// commit counts as one write and is all-or-nothing, like Firestore);
+// `failNthWrite(n)` fails only the n-th write.
+// `doc().create()` fails with ALREADY_EXISTS when the document exists.
 
 const fs = require("fs");
 const path = require("path");
@@ -54,7 +58,15 @@ function createFakeFirestore({ indexes } = {}) {
   let failuresLeft = 0;
   let failAfter = null; // fail every query after this many have run
   let queryCount = 0;
+  let writeCount = 0;
+  let failWritesAt = null;
+  let failOnlyWrite = null;
   const queryLog = [];
+  const writeGate = () => {
+    writeCount++;
+    if (failWritesAt !== null && writeCount > failWritesAt) throw new Error("UNAVAILABLE: simulated Firestore write failure");
+    if (failOnlyWrite !== null && writeCount === failOnlyWrite) throw new Error("UNAVAILABLE: simulated Firestore write failure");
+  };
 
   const docsFor = (name) => collections[name] || (collections[name] = []);
 
@@ -105,32 +117,81 @@ function createFakeFirestore({ indexes } = {}) {
   }
 
   const firestore = () => ({
+    batch() {
+      const ops = [];
+      return {
+        set(ref, data, opts) {
+          ops.push({ ref, kind: "set", data, opts });
+          return this;
+        },
+        update(ref, data) {
+          ops.push({ ref, kind: "update", data });
+          return this;
+        },
+        delete(ref) {
+          ops.push({ ref, kind: "delete" });
+          return this;
+        },
+        async commit() {
+          writeGate();
+          // all-or-nothing: validate first, then apply without the gate
+          for (const op of ops) if (op.kind === "update" && !docsFor(op.ref._collection).some((d) => d.id === op.ref._id)) throw new Error(`NOT_FOUND: ${op.ref._collection}/${op.ref._id}`);
+          for (const op of ops) {
+            const list = docsFor(op.ref._collection);
+            const found = list.find((d) => d.id === op.ref._id);
+            if (op.kind === "delete") {
+              if (found) list.splice(list.indexOf(found), 1);
+            } else if (op.kind === "update") Object.assign(found.data, op.data);
+            else if (found && op.opts && op.opts.merge) Object.assign(found.data, op.data);
+            else if (found) found.data = { ...op.data };
+            else list.push({ id: op.ref._id, data: { ...op.data } });
+          }
+        }
+      };
+    },
     collection(name) {
       const q = new FakeQuery(name);
       return {
         where: (...a) => q.where(...a),
         orderBy: (...a) => q.orderBy(...a),
         async add(data) {
+          writeGate();
           const id = `doc${idCounter++}`;
           docsFor(name).push({ id, data: { ...data } });
           return { id };
         },
         doc(id) {
+          const find = () => docsFor(name).find((d) => d.id === id);
           return {
+            _collection: name,
+            _id: id,
             async get() {
-              const found = docsFor(name).find((d) => d.id === id);
-              return { exists: !!found, data: () => found && found.data };
+              const found = find();
+              return { exists: !!found, id, data: () => found && found.data };
             },
             async update(data) {
-              const found = docsFor(name).find((d) => d.id === id);
+              writeGate();
+              const found = find();
               if (!found) throw new Error(`NOT_FOUND: ${name}/${id}`);
               Object.assign(found.data, data);
             },
             async set(data, opts) {
-              const found = docsFor(name).find((d) => d.id === id);
+              writeGate();
+              const found = find();
               if (found && opts && opts.merge) Object.assign(found.data, data);
               else if (found) found.data = { ...data };
               else docsFor(name).push({ id, data: { ...data } });
+            },
+            async create(data) {
+              writeGate();
+              if (find()) throw Object.assign(new Error(`ALREADY_EXISTS: ${name}/${id}`), { code: 6 });
+              docsFor(name).push({ id, data: { ...data } });
+            },
+            async delete() {
+              writeGate();
+              const list = docsFor(name);
+              const i = list.findIndex((d) => d.id === id);
+              if (i >= 0) list.splice(i, 1);
             }
           };
         }
@@ -146,6 +207,16 @@ function createFakeFirestore({ indexes } = {}) {
     failNextQueries: (n) => {
       failuresLeft = n;
     },
+    failWritesAfter: (n) => {
+      writeCount = 0;
+      failWritesAt = n;
+    },
+    // fail exactly the n-th write from now (later writes succeed again)
+    failNthWrite: (n) => {
+      writeCount = 0;
+      failOnlyWrite = n;
+    },
+    writeCount: () => writeCount,
     failQueriesAfter: (n) => {
       queryCount = 0;
       failAfter = n;

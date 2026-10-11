@@ -239,3 +239,20 @@ export interface OpportunityEngineResult {
 export function runOpportunityEngine(businessId: string): Promise<OpportunityEngineResult> {
   return callFunction<OpportunityEngineResult>("visibilityRunOpportunityEngine", { businessId });
 }
+
+export interface DecisionEngineResult {
+  cacheHit: boolean;
+  decision: "computed" | "cache_hit" | "in_progress";
+  inProgress?: boolean;
+  outcome?: "DECISIONS" | "WAIT_FOR_DATA";
+  reason?: string;
+  runId: string;
+  providerCalled: false;
+  written: number;
+  summary: { intents: number; decisions: number; byDecision: Record<string, number>; creates?: number } | null;
+}
+
+// M6 - explicit owner action only (button). Firestore only, no provider.
+export function runDecisionEngine(businessId: string): Promise<DecisionEngineResult> {
+  return callFunction<DecisionEngineResult>("visibilityRunDecisionEngine", { businessId });
+}

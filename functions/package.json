@@ -15,6 +15,6 @@
   },
   "private": true,
   "scripts": {
-    "test": "node test/governorBehavior.manualTest.js && node test/serviceFacets.manualTest.js && node test/crawlSite.manualTest.js && node test/costControl.regression.test.js && node test/serviceMapMerge.test.js && node test/searchUniverse.test.js && node test/searchIntelligence.test.js && node test/opportunityEngine.test.js"
+    "test": "node test/governorBehavior.manualTest.js && node test/serviceFacets.manualTest.js && node test/crawlSite.manualTest.js && node test/costControl.regression.test.js && node test/serviceMapMerge.test.js && node test/searchUniverse.test.js && node test/searchIntelligence.test.js && node test/opportunityEngine.test.js && node test/decisionEngine.test.js"
   }
 }

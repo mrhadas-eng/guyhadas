@@ -101,6 +101,35 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // --- M6 Decision Engine (docs/M6_DECISION_ENGINE_DESIGN.md §J) ---
+    // SearchIntents and decision runs are engine-generated (Admin SDK only).
+    match /searchIntents/{intentId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /decisionRuns/{runId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // One-run-per-business lease lock (Admin SDK only).
+    match /decisionRunLocks/{businessId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Decisions: the engine writes everything; the owner may only record
+    // their review (ownerStatus, ownerNote). Evidence, reasons, ownership,
+    // collision and history cannot be changed, created or deleted by a client.
+    match /decisions/{decisionId} {
+      allow read: if isAdmin();
+      allow create, delete: if false;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["ownerStatus", "ownerNote", "updatedAt"])
+        && request.resource.data.get("ownerStatus", "pending") in ["pending", "accepted", "rejected", "deferred"];
+    }
+
     // Integration status docs (ga4/search_console/semrush/...). Read-only
     // for clients as of Milestone 2: writes now happen exclusively through
     // the visibilityConnectIntegration / visibilitySyncGa4 /

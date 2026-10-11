@@ -14,6 +14,7 @@ Object.assign(exports, require("./businessUnderstanding"));
 Object.assign(exports, require("./searchUniverse"));
 Object.assign(exports, require("./searchIntelligence"));
 Object.assign(exports, require("./opportunityEngine"));
+Object.assign(exports, require("./decisionEngine"));
 
 const GUY_CALENDAR_EMAIL = "mr.hadas@gmail.com";
 
