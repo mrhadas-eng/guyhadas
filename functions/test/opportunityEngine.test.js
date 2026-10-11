@@ -322,6 +322,18 @@ const byType = (opps, type) => opps.filter((o) => o.type === type);
     assert.strictEqual(opps.filter((o) => o.type === "coverage_gap").length, 1, "no duplicate re-proposal");
   });
 
+  await test("M6 compatibility: an M5 re-run never resets opportunities.decisionId", async () => {
+    const t = await setup();
+    await t.run();
+    const rank = byType(t.engineOpps(), "ranking_upside")[0];
+    assert.strictEqual(rank.decisionId, null, "initialised to null on creation");
+    await t.db.collection("opportunities").doc(rank.id).update({ decisionId: `${BIZ}_intent_${BIZ}_tRank` });
+    await t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ lastCrawledAtMs: NOW + 5000 });
+    const r = await t.run(NOW + 6000);
+    assert.strictEqual(r.decision, "computed");
+    assert.strictEqual(t.engineOpps().find((o) => o.id === rank.id).decisionId, `${BIZ}_intent_${BIZ}_tRank`);
+  });
+
   await test("no longer detected -> resolved (kept), re-detected -> active again", async () => {
     const t = await setup();
     await t.run();

@@ -1990,9 +1990,9 @@ Not implemented (M6+): SearchIntent, ownership, cannibalization, final decisions
 - business value
 - prioritization
 
-### M6 — Decision Engine **(CURRENT NEXT MILESTONE — design phase)**
+### M6 — Decision Engine **(CURRENT MILESTONE)**
 
-**Status: DESIGN (revision 2, owner review applied) — `docs/M6_DECISION_ENGINE_DESIGN.md`; no implementation yet.**
+**Status: IMPLEMENTED + TESTED on `feature/m6-decision-engine` (not merged, not deployed); live Hagar validation pending.** Design: `docs/M6_DECISION_ENGINE_DESIGN.md`; implementation decisions and deviations: `docs/M6_IMPLEMENTATION_NOTES.md`.
 
 - Search Intent object
 - canonical ownership

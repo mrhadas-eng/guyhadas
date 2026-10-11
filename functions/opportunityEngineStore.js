@@ -142,7 +142,6 @@ async function runOpportunityEngine({ businessId, nowMs = Date.now() }) {
       opportunityRunId: runId,
       baselineId: inputs.baseline ? inputs.baseline.id : null,
       baselineMatchesRun,
-      decisionId: null,
       analysisVersion: inputs.run.analysisVersion || null,
       modelVersion: ENGINE_VERSION,
       configVersion: CONFIG_VERSION,
@@ -151,13 +150,17 @@ async function runOpportunityEngine({ businessId, nowMs = Date.now() }) {
     };
     const prev = existingById.get(id);
     if (prev) {
-      // Owner fields (status, notes) are not part of this update.
+      // Owner fields (status, notes) and the M6 decision link (decisionId)
+      // are not part of this update.
       await db.collection("opportunities").doc(id).update({ ...engineFields, detectionCount: (prev.detectionCount || 1) + 1, resolvedAtMs: null });
       updated++;
     } else {
       await db.collection("opportunities").doc(id).set({
         ...engineFields,
         status: "new",
+        // M6 owns this link: initialised only on creation, never reset by a
+        // later M5 run (docs/M6_DECISION_ENGINE_DESIGN.md §M.3).
+        decisionId: null,
         detectionCount: 1,
         firstDetectedAtMs: nowMs,
         firstDetectedAt: now,

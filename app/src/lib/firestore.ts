@@ -34,7 +34,11 @@ import type {
   SeoPage,
   IntelligenceRun,
   Baseline,
-  OpportunityRun
+  OpportunityRun,
+  Decision,
+  DecisionOwnerStatus,
+  DecisionRun,
+  SearchIntent
 } from "../types";
 
 // How much history the Traffic/Search trend charts load. Milestone 3's
@@ -467,4 +471,21 @@ export function listenLatestOpportunityRun(businessId: string, cb: (run: Opportu
     runs.sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0));
     cb(runs[0] || null);
   });
+}
+
+// --- M6 Decision Engine (engine-generated; the owner may only record a review) ---
+export function listenDecisions(businessId: string, cb: (items: Decision[]) => void): Unsubscribe {
+  return byBusiness<Decision>("decisions", businessId, (rows) => cb(rows.sort((a, b) => a.id.localeCompare(b.id))));
+}
+
+export function listenSearchIntents(businessId: string, cb: (items: SearchIntent[]) => void): Unsubscribe {
+  return byBusiness<SearchIntent>("searchIntents", businessId, (rows) => cb(rows.filter((r) => r.status === "active")));
+}
+
+export function listenLatestDecisionRun(businessId: string, cb: (run: DecisionRun | null) => void): Unsubscribe {
+  return byBusiness<DecisionRun>("decisionRuns", businessId, (rows) => cb(rows.filter((r) => r.status === "completed").sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0))[0] || null));
+}
+
+export async function updateDecisionReview(id: string, data: { ownerStatus?: DecisionOwnerStatus; ownerNote?: string }) {
+  return updateDoc(doc(db, "decisions", id), { ...data, updatedAt: serverTimestamp() });
 }

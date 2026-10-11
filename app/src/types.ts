@@ -104,6 +104,7 @@ export interface Opportunity {
   baselineMatchesRun?: boolean;
   sourceRunId?: string;
   ownerNote?: string;
+  decisionId?: string | null; // M6 link (written by the Decision Engine)
 }
 
 export interface OpportunityFactor {
@@ -140,6 +141,105 @@ export interface OpportunityRun {
   weightsOverride?: Record<string, number>;
   engineVersion?: number;
   configVersion?: number;
+}
+
+// --- M6 Decision Engine (engine-generated; owner may set only ownerStatus /
+// ownerNote - see firestore.rules) ---
+export type DecisionValue = "CREATE" | "IMPROVE" | "CONSOLIDATE" | "WAIT" | "MONITOR" | "REJECT";
+export type DecisionOwnerStatus = "pending" | "accepted" | "rejected" | "deferred";
+
+export interface DecisionCandidate {
+  pageKey: string;
+  url: string;
+  sources: string[];
+  role?: string | null;
+  observedShare: number | null;
+  clickShare: number | null;
+  bestPosition: number | null;
+  eligibility: string;
+  blocker: string | null;
+  intentFit: string;
+  entityFit: boolean | null;
+}
+
+export interface Decision {
+  id: string;
+  decisionId: string;
+  businessId: string;
+  scope: "intent" | "page" | "site";
+  intentId: string | null;
+  pageKey: string | null;
+  signalKey: string | null;
+  unitTitle: string;
+  opportunityIds: string[];
+  decision: DecisionValue;
+  actionDetail: string | null;
+  actionDetails?: string[];
+  confidence: "high" | "medium" | "low";
+  confidenceReasons: string[];
+  reasonCodes: string[];
+  blockingConditions: string[];
+  existingOwnerPageKey: string | null;
+  existingOwnerUrl: string | null;
+  recommendedPage: { kind: string; pageKey: string | null; url: string | null; intentId?: string; note?: string };
+  ownership: { status: string; acceptable: boolean; confidence: string; candidates: DecisionCandidate[] } | null;
+  collision: { status: string; reason: string; pairs: { a: string; b: string; status: string; reason: string }[] } | null;
+  proposedPageCollision?: { status: string; reason: string };
+  newPageJustification: { evaluated: boolean; justified: boolean; distinctOn: string[]; reason: string | null; distinctValue: Record<string, unknown> | null };
+  cluster: { clusterId: string; siblingIntentIds: string[]; parentPageKey: string | null; parentPageUrl?: string | null } | null;
+  dependencies: { decisionId: string; relation: string }[];
+  consolidation: { recommendedOwnerPageKey: string; recommendedOwnerUrl: string; otherPageKeys: string[]; statement: string; declaredCanonicals: { pageKey: string; declaredCanonical: string; note: string }[]; googleSelectedCanonical: null } | null;
+  alternativesConsidered: { decision: string; target?: string; rejectedBecause: string[] }[];
+  deferredCreate?: { reason: string } | null;
+  businessValue: {
+    relevance: { level: number | null; basis: string };
+    commercialValue: { level: number | null; basis: string };
+    marketDemand: { status: string; monthlyVolume: number | null; basis: string; source: string | null };
+    observedVisibility: { status: string; impressions: number | null; clicks: number | null; basis: string; source: string | null };
+  } | null;
+  evidence: OpportunityEvidence[];
+  missing: string[];
+  summary: string;
+  ownerStatus: DecisionOwnerStatus;
+  ownerNote?: string;
+  ownerStatusResetReason?: string | null;
+  engineState: "active" | "superseded";
+  previousDecision?: string | null;
+  decisionHistory: { decision: string; confidence: string | null; at: number; event?: string; previousDecision?: string; reasonCodes: string[] }[];
+  firstDecidedAtMs?: number;
+  lastEvaluatedAtMs?: number;
+  decisionRunId?: string;
+  modelVersion?: number;
+  configVersion?: number;
+}
+
+export interface SearchIntent {
+  id: string;
+  intentId: string;
+  businessId: string;
+  title: string;
+  topicIds: string[];
+  topicTitles?: string[];
+  queryCount: number;
+  sampleQueries: string[];
+  intentType: string;
+  secondaryIntentTypes: string[];
+  intentConfidence: string;
+  userTask: { verb: string | null; object: string; qualifiers: { geography: string | null; audience: string | null; priceSensitivity: boolean } };
+  entityRefs: { id: string; type: string; label: string; basis: string; ownerDeclared?: boolean }[];
+  clusterId: string;
+  status: "active" | "superseded";
+}
+
+export interface DecisionRun {
+  id: string;
+  businessId: string;
+  status: "running" | "completed";
+  completedAtMs?: number;
+  outcome?: "DECISIONS" | "WAIT_FOR_DATA";
+  reason?: string;
+  policy?: { createBudgetPerRun: number; createsPerClusterPerRun: number; sources: Record<string, string> };
+  summary: { intents: number; decisions: number; byDecision: Record<string, number>; creates?: number; createCandidates?: number; created?: number; changed?: number; superseded?: number };
 }
 
 export const TASK_STATUS_LABELS: Record<TaskStatus, string> = {
