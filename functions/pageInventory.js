@@ -16,10 +16,11 @@
 //
 // Diagnostics are observations for M5 to consume - never tasks.
 
+const { extractPhones } = require("./phoneEvidence");
 const crypto = require("crypto");
 const { canonicalUrl, pageKey } = require("./webUtils");
 
-const INVENTORY_VERSION = 1;
+const INVENTORY_VERSION = 2; // 2: phone evidence with provenance (issue #36)
 
 // --- robots.txt --------------------------------------------------------------
 
@@ -125,13 +126,7 @@ function parseJsonLd($) {
   return { blockCount: blocks.length, invalidCount: invalid, types: [...types].sort(), facts };
 }
 
-const PHONE_RE = /(?:\+972[-\s]?|0)(?:[23489]|5\d|7\d)[-\s]?\d{3}[-\s]?\d{4}/g;
 const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
-
-function normalizePhone(p) {
-  const digits = String(p).replace(/\D/g, "");
-  return digits.startsWith("972") ? `0${digits.slice(3)}` : digits;
-}
 
 // Analyze one fetched page. `fetched` = { url, html, status, finalUrl, xRobotsTag }.
 function analyzePage(fetched, cheerio, ctx) {
@@ -181,7 +176,6 @@ function analyzePage(fetched, cheerio, ctx) {
       if (pageKey(target) !== pageKey(url)) outbound.add(pageKey(target));
     } else externalLinks++;
   });
-  const telLinks = $('a[href^="tel:"]').map((_, el) => $(el).attr("href").slice(4)).get();
   const mailLinks = $('a[href^="mailto:"]').map((_, el) => $(el).attr("href").slice(7).split("?")[0]).get();
 
   const $body = cheerio.load(fetched.html || "");
@@ -190,7 +184,10 @@ function analyzePage(fetched, cheerio, ctx) {
   const fullText = $("body").text().replace(/\s+/g, " ").trim();
   const wordCount = bodyText ? bodyText.split(" ").filter(Boolean).length : 0;
 
-  const phones = [...new Set([...(fullText.match(PHONE_RE) || []), ...telLinks, ...jsonLd.facts.telephones].map(normalizePhone).filter((d) => d.length >= 9))];
+  // Phone numbers: tel: links, JSON-LD and rendered text only (never
+  // script/style), numbering-plan validated, with per-number provenance
+  // (functions/phoneEvidence.js, issue #36).
+  const { phones, phoneEvidence, phoneRejected } = extractPhones($, jsonLd.facts.telephones);
   const emails = [...new Set([...(fullText.match(EMAIL_RE) || []), ...mailLinks].map((e) => e.toLowerCase()))];
 
   // Indexability (crawl-derived).
@@ -236,7 +233,7 @@ function analyzePage(fetched, cheerio, ctx) {
     structuredData,
     structuredFacts: jsonLd.facts,
     links: { outboundInternal: [...outbound].sort(), outboundInternalCount: outbound.size, externalCount: externalLinks },
-    contact: { phones, emails },
+    contact: { phones, emails, phoneEvidence, phoneRejected },
     // kept for GEO/topic matching in this run only; not persisted in full
     _text: `${title || ""} ${h1.join(" ")} ${h2.join(" ")} ${bodyText}`.slice(0, 20000)
   };

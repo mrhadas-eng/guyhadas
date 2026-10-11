@@ -80,3 +80,38 @@ Pending deploy (`functions`, `hosting:app`, `firestore:rules`). Checklist:
 ## Known gaps
 
 See the brief §9. Plus: GA4/other Google ingestion still ungoverned (MASTER §34/§42); baselines are capped at 200 topics / 100 pages per document.
+
+---
+
+## Update — phone-number evidence quality (issue #36, 2026-10-11)
+
+**Problem found in live M6 validation:** the GEO readiness `fact_consistency` signal reported "N different phone numbers across crawled pages" with a dump of numeric strings. The pre-#36 extractor:
+- ran an unbounded regex over `$("body").text()`, which includes inline `<script>`/`<style>`/JSON text;
+- matched 9–10-digit windows inside longer numbers;
+- did not check the numbering plan and stored no provenance;
+- treated *any* second distinct number as an inconsistency.
+
+**Now (`functions/phoneEvidence.js`, used by `pageInventory.analyzePage` and `geoReadiness`):**
+- **Sources:**
+  - `tel:` links and JSON-LD `telephone` (strong);
+  - rendered text nodes only, never script/style/noscript/template/svg/hidden. Each text match is recorded as `page_content` or `site_chrome` (header/footer/nav).
+- **What counts as a text match:**
+  - It must stand alone: no digit, letter, `.`, `/` or `-` adjacent to it.
+  - It must be labelled (a phone word such as טלפון / נייד / phone / tel just before it) or written in phone formatting (separators or +972).
+  - Bare unlabelled digit runs are rejected as IDs.
+- **Validation:** Israeli numbering plan (05X / 07X / 02-09 landline / 1-700 / 1-800 / 1-599). Repeated-digit placeholders are rejected. Values are normalized to E.164, so local, international, `(0)`, `00972`, spaces, hyphens and parentheses variants are one number. Explicit foreign `tel:` / JSON-LD numbers are kept as E.164.
+- **Stored per page:** `seoPages.contact.phoneEvidence[]` (`raw`, `normalized`, `national`, `display`, `kind`, `source`, `location`, `labelled`, `strength`) and `contact.phoneRejected`. `contact.phones` keeps its old shape (national digits), now of accepted numbers only. `INVENTORY_VERSION` is now 2.
+- **`fact_consistency` verdicts:**
+  - `partial` (a discrepancy) only when two pages each show a *trusted* number (`tel:`, JSON-LD or labelled text) and their trusted numbers do not overlap, or when JSON-LD declarations disagree between pages.
+  - Several numbers shown together → `present` ("the business uses more than one number").
+  - A difference resting only on weak (unlabelled) text → `unknown` with `insufficientEvidence: true`.
+  - No trustworthy number → `unknown`.
+  - The signal carries `details[]` (number → pages → source/location/raw), `values` (display form), `rejectedCandidates`, `method` and, when partial, `conflict` (kind + page pairs). The observation is one concise sentence naming the numbers and example pages.
+- **Downstream semantics are unchanged:**
+  - M5 creates `entity_clarity` only for `missing`/`partial`.
+  - M6's site decision follows the opportunity; if the signal is no longer `partial`, the opportunity resolves and the decision is superseded.
+- **Freshness:** M4 recrawls and recomputes these on every run (only the GSC call is cached). A new M4 run changes the intelligence run id, so M5 and then M6 recompute through their normal cache identities.
+
+**Limitation:** visible-text detection targets Israeli formats; non-Israeli numbers are recognised from `tel:` links and JSON-LD only.
+
+**Developer probe:** `node functions/tools/phoneEvidenceProbe.js <url>…` prints the old vs new extraction for live pages.

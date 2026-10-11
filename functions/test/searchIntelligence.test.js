@@ -24,7 +24,7 @@ const PAGES = {
      <script type="application/ld+json">{"@type":"LocalBusiness","name":"Hagar Lushi Studio","telephone":"054-1234567","areaServed":"קיסריה"}</script>`
   ),
   [`${ORIGIN}/אדריכלות`]: html(`<h1>אדריכלות למגורים</h1><h2>תכנון בתים פרטיים</h2><p>אדריכלות למגורים בקיסריה ובשרון</p><a href="/">בית</a>`, `<title>אדריכלות למגורים</title><link rel="canonical" href="${ORIGIN}/אדריכלות">`),
-  [`${ORIGIN}/צור-קשר`]: html(`<h1>צור קשר</h1><h1>שני</h1><p>טלפון 052-9999999</p><a href="/">בית</a>`, `<title>הגר לושי - אדריכלות</title><link rel="canonical" href="${ORIGIN}/other"><link rel="canonical" href="${ORIGIN}/third">`),
+  [`${ORIGIN}/צור-קשר`]: html(`<h1>צור קשר</h1><h1>שני</h1><p>טלפון 052-6123987</p><a href="/">בית</a>`, `<title>הגר לושי - אדריכלות</title><link rel="canonical" href="${ORIGIN}/other"><link rel="canonical" href="${ORIGIN}/third">`),
   [`${ORIGIN}/noindex-page`]: html(`<h1>דף</h1>`, `<title>דף</title><meta name="robots" content="noindex,follow"><script type="application/ld+json">{bad json</script>`),
   [`${ORIGIN}/orphan`]: html(`<h1>יתום</h1>`, `<title>יתום</title><link rel="canonical" href="${ORIGIN}/orphan">`)
 };
@@ -235,7 +235,7 @@ async function test(name, fn) {
 
   await test("13b quota exhausted: blocked, provider not called, run still honest", async () => {
     const t = await setup();
-    for (let i = 0; i < 10; i++) t.fake.seed("apiUsage", { provider: "google", operation: "searchConsoleQueryPage", businessId: BIZ, status: "success", providerCalled: true, inputHash: `x${i}`, retrievedAtMs: NOW - 1000 });
+    for (let i = 0; i < 10; i++) t.fake.seed("apiUsage", { provider: "google", operation: "searchConsoleQueryPage", businessId: BIZ, status: "success", providerCalled: true, inputHash: `x${i}`, retrievedAtMs: Date.now() - 1000 });
     const r = await t.store.runSearchIntelligence({ businessId: BIZ, deps: t.deps() });
     assert.strictEqual(r.gsc.status, "not_available");
     assert.strictEqual(r.gsc.blockedReason, "blocked_by_quota");
@@ -271,7 +271,12 @@ async function test(name, fn) {
     assert.strictEqual(s.services_explicit.status, "present");
     assert.strictEqual(s.locations_explicit.status, "present");
     assert.strictEqual(s.contact_details.status, "present");
-    assert.strictEqual(s.fact_consistency.status, "partial", "two different phone numbers observed");
+    assert.strictEqual(s.fact_consistency.status, "partial", "two different phone numbers on different pages");
+    // issue #36: each number is traceable to its page and source
+    const byNum = Object.fromEntries(s.fact_consistency.details.map((d) => [d.normalized, d]));
+    assert.ok(byNum["+972541234567"].pages.some((p) => p.url === `${ORIGIN}/` && p.sources.some((x) => x.source === "tel_link")));
+    assert.ok(byNum["+972526123987"].pages.some((p) => p.url === `${ORIGIN}/צור-קשר` && p.sources.some((x) => x.source === "visible_text" && x.strength === "labelled")));
+    assert.ok(!/,.*,.*,/.test(s.fact_consistency.observation), "concise observation, no dump");
     assert.strictEqual(s.structured_data_coverage.status, "partial");
     assert.ok(r.geoReadiness.signals.every((x) => x.basis === "observed" && ["present", "partial", "missing", "unknown"].includes(x.status)));
     assert.ok(/not external AI visibility/.test(r.geoReadiness.scope));
