@@ -113,6 +113,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // One-run-per-business lease lock (Admin SDK only).
+    match /decisionRunLocks/{businessId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     // Decisions: the engine writes everything; the owner may only record
     // their review (ownerStatus, ownerNote). Evidence, reasons, ownership,
     // collision and history cannot be changed, created or deleted by a client.

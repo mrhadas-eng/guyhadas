@@ -12,7 +12,7 @@
 |---|---|---|
 | Versioned configuration | `functions/decisionConfig.js` | Every threshold is labelled an internal heuristic (ASSUMPTION), not a Google value. `DECISION_ENGINE_VERSION = 1`, `DECISION_CONFIG_VERSION = 1`. Safety ceilings and policy resolution (G5 / G11). |
 | Pure decision logic | `functions/decisionRules.js` | `decide(input)`: SearchIntents → ownership → cannibalization → one decision per unit → run-level CREATE selection (G11, G5). No I/O, no clock, input-order independent. |
-| Run orchestration | `functions/decisionEngineStore.js` | `runDecisionEngine({ businessId, nowMs })`: all reads first (fail closed) → M5 freshness gate → cache check → writes `searchIntents`, `decisions`, `decisionRuns`, `opportunities.decisionId`. |
+| Run orchestration | `functions/decisionEngineStore.js` | `runDecisionEngine({ businessId, nowMs })`: read-only cache check → per-business lease lock → re-read → M5 freshness gate → compute → chunked batch writes of `searchIntents`, `decisions`, `opportunities.decisionId` → run record. See §3a. |
 | HTTP endpoint | `functions/decisionEngine.js` → `visibilityRunDecisionEngine` | `requireAdmin`, POST only, explicit owner action. Registered in `functions/index.js`. |
 | M5 compatibility fix | `functions/opportunityEngineStore.js` | `decisionId: null` is now written **only on creation**; updates never touch it (design §M.3). |
 | Firestore rules | `firestore.rules` | `searchIntents`, `decisionRuns`: read-only for clients. `decisions`: no client create/delete; client update limited to `ownerStatus` (pending/accepted/rejected/deferred), `ownerNote`, `updatedAt`. M5 protections unchanged. |
@@ -26,7 +26,8 @@ No new composite index: every query is `businessId ==` (ordering in memory).
 
 - `searchIntents/{businessId}_{anchorTopicId}` — §D.1 fields + `cluster`, `ownership` (candidates with shares, eligibility, fit), `cannibalization` (pairs, `serpOverlap: "missing"`, `googleSelectedCanonical: null`, thresholds labelled as assumptions), `businessValue`, `status: active|superseded`, `supersededByIntentIds`.
 - `decisions/{businessId}_{scope}_{unitKey}` — unitKey = intentId (intent scope), `sha16(pageKey)` (page), signal key (site). §C.2 fields. Owner fields `ownerStatus`, `ownerNote`; engine fields everything else; `decisionHistory` (capped at 20, append-only), `previousDecision`, `ownerStatusResetReason`.
-- `decisionRuns/{auto}` — inputHash, outcome (`DECISIONS` | `WAIT_FOR_DATA`), effective `policy` (with sources), heuristics, ids, summary (`byDecision`, `byScope`, `byCluster`, `creates`, `createCandidates`, `created/changed/unchanged/superseded/ownerReset`, `linkedOpportunities`), `unmappedOpportunities`, `providerCalled: false`.
+- `decisionRuns/{businessId}_run_{inputHash[0:24]}` (deterministic per input fingerprint; a retry of the same input reuses it, `attempt` counts) — `status: running | completed | failed | abandoned`, inputHash, `outputStateHash`, outcome (`DECISIONS` | `WAIT_FOR_DATA`), effective `policy` (with sources), heuristics, ids, summary (`byDecision`, `byScope`, `byCluster`, `creates`, `createCandidates`, `created/changed/unchanged/superseded/ownerReset`, `linkedOpportunities`), `unmappedOpportunities`, `providerCalled: false`.
+- `decisionRunLocks/{businessId}` — transient lease lock (created atomically, deleted on release; server-only in rules).
 - `opportunities.decisionId` — the only M6 write on an M5 document.
 
 Nothing else: no tasks, pages, content, redirects, predictions, change events or experiments (tested).
@@ -45,7 +46,18 @@ Nothing else: no tasks, pages, content, redirects, predictions, change events or
 
 **Confidence** — weakest link of intent, ownership, collision and folded M5 opportunity confidence, then caps: unknown market demand / visibility-only CREATE ≤ medium; CONSOLIDATE without a declared canonical relation ≤ medium; no baseline ≤ medium; target page not crawled ≤ medium. Every reduction carries a reason.
 
-**Lifecycle** — deterministic ids; cache identity = engine/config versions + heuristics + effective policy + intelligence run + M5 run id/hash + baseline + topics/statuses + engine opportunity statuses + owner-set decision statuses (not the initial `pending`) + seoPages fingerprint + confirmed services + business geographies/name + brand terms. Identical → `cache_hit`, zero writes. Unchanged decision → engine fields refreshed, owner fields and history untouched. Changed decision → history entry (with the owner status at change); `accepted`/`rejected` reset to `pending` with `ownerStatusResetReason: "decision_changed_since_owner_review"`; `deferred` and the owner's note are kept. Vanished unit → `engineState: "superseded"` (never deleted): topics no longer approved → REJECT `TOPIC_NO_LONGER_APPROVED`; regrouped → `SUBSUMED_BY_DECISION` with a `subsumed_by` dependency on the successor.
+**Lifecycle** — deterministic ids; cache rules in §3a. Identical input and intact output state → `cache_hit`, zero writes. Unchanged decision → engine fields refreshed, owner fields and history untouched. Changed decision → history entry (with the owner status at change); `accepted`/`rejected` reset to `pending` with `ownerStatusResetReason: "decision_changed_since_owner_review"`; `deferred` and the owner's note are kept. Vanished unit → `engineState: "superseded"` (never deleted): topics no longer approved → REJECT `TOPIC_NO_LONGER_APPROVED`; regrouped → `SUBSUMED_BY_DECISION` with a `subsumed_by` dependency on the successor.
+
+## 3a. Run safety (PR #34 review)
+
+**Cache = input fingerprint AND output-state fingerprint.**
+- *Input fingerprint* (`semanticInput`, `FINGERPRINT_VERSION = 2`): every document `decide()` and the freshness gate read is hashed **in full** (all fields, sorted by id): `searchTopics` (queries, qualification reasons, seed refs, preliminary intent…), the latest run's `topicIntelligence` (GSC pages + per-page queries, Semrush, content matches, linked services, geography…), `seoPages` (title, H1, H2, role, canonical, indexability, robots…), `businessServices`, `businessKnowledge`, engine `opportunities` (all fields except `decisionId`), the M5 run identity (id, inputHash, intelligence run, evaluated topic ids), baseline id, owner-set decision review statuses, engine/config versions, heuristics, modifier lists and effective policy. Exclusions are deliberate and listed in the code: `opportunities.decisionId` (M6's own write), business-doc fields other than `name` / `geographicMarkets` / `decisionPolicy` (decide() reads nothing else; other processes touch that doc), and M6's own output documents. Over-inclusion costs at most an idempotent recomputation; under-inclusion would be a false "nothing changed".
+- *Output-state fingerprint* (`stateFingerprint`): decisions (id, decision, engineState), intents (id, status) and opportunity links. Stored on the completed run as `outputStateHash`; a cache hit also requires the current state to equal it, so deleted/edited engine records or a partial write are repaired instead of reported as unchanged.
+- The cache check runs first, read-only: an unchanged business takes no lock and writes nothing.
+
+**Concurrency.** One run per business: `decisionRunLocks/{businessId}` is created with `create()` (atomic; fails if it exists) with a 5-minute lease (> the 120 s function timeout). A second request while the lock is live returns `decision: "in_progress"` and writes nothing. Under the lock, inputs are re-read and the cache re-checked (a concurrent identical run that just finished turns this one into a cache hit). The lock is released (deleted, only by its owner) in `finally`. An expired lease is taken over (owner re-read to confirm); the run records `tookOverLockFrom`.
+
+**Partial writes.** All data reads happen before any data write. The run record is written `running` first; data writes are committed in batches of 400 (each batch atomic); on any failure the run is marked `failed` with `failedPhase`, `chunksCommitted`, `opsCommitted`, `totalOps` and a recovery note, the lock is released and the error is returned. If the process dies before it can mark the failure, the lease expires and the next run marks the left-over `running` record `abandoned` (`abandonedByRunId`). Every write is idempotent (deterministic ids, full-document sets, history appended only on a real change), so the next run repairs the state exactly (tested: the repaired state equals a clean run's, with no duplicated history), and a failed or partial state can never produce a cache hit. The UI shows when the latest attempt failed or is still running.
 
 ## 4. Policy (G5 / G11)
 
@@ -56,7 +68,7 @@ Nothing else: no tasks, pages, content, redirects, predictions, change events or
 
 ## 5. Tests
 
-`node functions/test/decisionEngine.test.js` — 41 tests, all passing. They cover every item in design §Q and the implementation brief:
+`node functions/test/decisionEngine.test.js` — 68 tests, all passing. They cover every item in design §Q and the implementation brief:
 
 - intent types per rule, unclassified valid, user task, entity refs, cluster id, G4 grouping and non-grouping of different places;
 - 100 queries → 1 decision; 10 opportunities → 1 decision; decision count bounded by units;
@@ -72,7 +84,10 @@ Nothing else: no tasks, pages, content, redirects, predictions, change events or
 - integration: real M5 run then M6 — every active opportunity folded into exactly one active decision and linked by `decisionId`;
 - M5 regression: an M5 re-run after M6 linked a decision preserves `opportunities.decisionId` (also added to `opportunityEngine.test.js`);
 - boundary: provider-free modules, M3/M4 data byte-identical, only `opportunities.decisionId` changes on M5 docs, no tasks/pages/content/predictions;
-- determinism: identical output for identical input in reversed order.
+- determinism: identical output for identical input in reversed order;
+- **cache correctness** (21 mutation tests): with ids, titles, counts and timestamps unchanged, changing a topic's query text, qualification reason, seed ref or preliminary intent; topic-intelligence page queries, market demand or content match; a page's title, H1, H2, role, canonical, indexability or robots; a service alias or facet geography; business geographies; brand terminology; an opportunity's owner status or confidence; or the business decision policy — each recomputes. Verified that the previous count/timestamp fingerprint fails 14 of them. An unrelated business field does not invalidate the cache; a deleted decision or a lost opportunity link is repaired and only then becomes a cache hit again;
+- **concurrency:** two simultaneous runs → one `computed`, one `in_progress` with zero writes, exactly one run record, no duplicated history, lock released; a live foreign lock → `in_progress`, never released by the wrong owner;
+- **recovery:** a failure in the second write chunk → run `failed` (phase, chunks committed), lock released, partial state; the retry reuses the same run record (`attempt: 2`), completes, and the state equals a clean run's; a crashed run (expired lease + `running` record) is taken over and recorded `abandoned`.
 
 Other suites: `opportunityEngine` (incl. the new regression), `searchUniverse`, `serviceMapMerge`, `costControl.regression` pass. App: `npm test` (paid-run flow, no-provider-call-on-render — now 14 effects / 18 callables, page priority) and `npm run build` pass.
 
@@ -91,7 +106,8 @@ Other suites: `opportunityEngine` (incl. the new regression), `searchUniverse`, 
 9. **Site scope:** conflicting facts → IMPROVE; missing signal → IMPROVE capped at medium (assumed benefit); partial non-conflict signal → MONITOR.
 10. **Location variant** = any intent with both a place and a confirmed service (conservative: G6 always applies to such intents).
 11. **CREATE selection order** for the budget: owner priority, then market demand, then observed visibility, then confidence, then intentId (deterministic).
-12. **Undefined guard:** writes pass through a `clean()` that drops `undefined` (Firestore Admin rejects it; `ignoreUndefinedProperties` is not set). Tests assert the pure output contains no `undefined`, so the guard is a backstop.
+12. **In-progress response.** A concurrent request returns HTTP 200 with `decision: "in_progress"` (no error), so the UI can explain it.
+13. **Undefined guard:** writes pass through a `clean()` that drops `undefined` (Firestore Admin rejects it; `ignoreUndefinedProperties` is not set). Tests assert the pure output contains no `undefined`, so the guard is a backstop.
 
 ## 7. Known limitations
 
@@ -102,6 +118,8 @@ Other suites: `opportunityEngine` (incl. the new regression), `searchUniverse`, 
 - Clusters are keyed on the primary service only (no cross-service clusters; M11).
 - No M7 data: a page that was just changed can be recommended again.
 - Thresholds, budget and cluster limit are assumptions until M9.
+- Lease takeover after a crash re-reads the lock to confirm ownership but is not transactional: two runs that both find the same *expired* lease at the same instant could both proceed. Their writes are idempotent and converge; the window exists only after a crash.
+- Batches are atomic per chunk (≤ 400 operations), not across chunks; consistency across chunks comes from the failed/abandoned marking + idempotent repair, not from a single transaction.
 - Firestore rules are not emulator-tested (same as M5); the rule shape mirrors the tested M5 opportunity rule.
 - The UI is an inspection view (final UX after M9). Business policy has no UI yet.
 

@@ -242,13 +242,14 @@ export function runOpportunityEngine(businessId: string): Promise<OpportunityEng
 
 export interface DecisionEngineResult {
   cacheHit: boolean;
-  decision: "computed" | "cache_hit";
+  decision: "computed" | "cache_hit" | "in_progress";
+  inProgress?: boolean;
   outcome?: "DECISIONS" | "WAIT_FOR_DATA";
   reason?: string;
   runId: string;
   providerCalled: false;
   written: number;
-  summary: { intents: number; decisions: number; byDecision: Record<string, number>; creates?: number };
+  summary: { intents: number; decisions: number; byDecision: Record<string, number>; creates?: number } | null;
 }
 
 // M6 - explicit owner action only (button). Firestore only, no provider.

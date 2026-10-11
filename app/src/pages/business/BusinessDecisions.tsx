@@ -268,6 +268,7 @@ export default function BusinessDecisions() {
   const [decisions, setDecisions] = useState<Decision[] | null>(null);
   const [intents, setIntents] = useState<SearchIntent[]>([]);
   const [run, setRun] = useState<DecisionRun | null>(null);
+  const [attempt, setAttempt] = useState<DecisionRun | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -276,7 +277,10 @@ export default function BusinessDecisions() {
     if (!business) return;
     const a = listenDecisions(business.id, setDecisions);
     const b = listenSearchIntents(business.id, setIntents);
-    const c = listenLatestDecisionRun(business.id, setRun);
+    const c = listenLatestDecisionRun(business.id, (r, a) => {
+      setRun(r);
+      setAttempt(a);
+    });
     return () => {
       a();
       b();
@@ -292,9 +296,10 @@ export default function BusinessDecisions() {
     setNotice(null);
     try {
       const r = await runDecisionEngine(business.id);
-      if (r.cacheHit) setNotice("לא השתנה דבר מאז הריצה הקודמת — ההחלטות נשארו כפי שהן.");
+      if (r.decision === "in_progress") setNotice("ריצה אחרת של קבלת החלטות פועלת כרגע לעסק הזה — לא בוצע דבר. אפשר לנסות שוב בעוד דקה.");
+      else if (r.cacheHit) setNotice("לא השתנה דבר מאז הריצה הקודמת — ההחלטות נשארו כפי שהן.");
       else if (r.outcome === "WAIT_FOR_DATA") setNotice(r.reason === "approved topics changed since the last opportunity detection - run opportunity detection again" || (r.reason || "").includes("opportunity detection") ? "צריך קודם להריץ שוב ״זיהוי הזדמנויות״ (הנתונים השתנו מאז)." : "צריך קודם להריץ ניתוח במודיעין חיפוש וזיהוי הזדמנויות.");
-      else setNotice(`ההחלטות עודכנו: ${r.summary.decisions} החלטות ל-${r.summary.intents} כוונות חיפוש.`);
+      else setNotice(`ההחלטות עודכנו: ${r.summary ? r.summary.decisions : 0} החלטות ל-${r.summary ? r.summary.intents : 0} כוונות חיפוש.`);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : "הריצה נכשלה");
     } finally {
@@ -365,6 +370,8 @@ export default function BusinessDecisions() {
         <button type="button" className="btn btn-primary" disabled={busy} onClick={doRun}>{busy ? "מחשב…" : "קבלת החלטות"}</button>
       </header>
       {notice && <div className="notice-ok">{notice}</div>}
+      {attempt && attempt.status === "failed" && <div className="panel-meta" style={{ marginBottom: "var(--space-3)" }}>הריצה האחרונה נכשלה באמצע ({when(attempt.failedAtMs)}). ההחלטות שמוצגות הן מהריצה המלאה הקודמת; ריצה חוזרת משלימה ומתקנת הכול.</div>}
+      {attempt && attempt.status === "running" && <div className="panel-meta" style={{ marginBottom: "var(--space-3)" }}>ריצה של קבלת החלטות פועלת כרגע…</div>}
       {run?.outcome === "WAIT_FOR_DATA" && <div className="panel-meta" style={{ marginBottom: "var(--space-3)" }}>ממתין לנתונים: צריך להריץ ניתוח במודיעין חיפוש ואז ״זיהוי הזדמנויות״.</div>}
 
       {active.length > 0 && (

@@ -799,6 +799,145 @@ function invariants(r, label) {
     assert.strictEqual(snap(), before);
   });
 
+  // --------------------------------------------------- cache correctness
+  // Each mutation keeps ids / titles / counts / timestamps constant and
+  // changes only a decision-driving field. Every one must recompute.
+  const CACHE_MUTATIONS = [
+    ["topic query text (same id, title and count)", async (t) => t.db.collection("searchTopics").doc("tGap").update({ queries: ["שיפוץ דירות מחיר"] })],
+    ["topic qualification reason", async (t) => t.db.collection("searchTopics").doc("tGap").update({ qualificationReasons: [{ code: "commercial_modifier", detail: "מחיר" }] })],
+    ["topic seed ref", async (t) => t.db.collection("searchTopics").doc("tGap").update({ seedRefs: [{ serviceId: "svcInt", serviceName: "עיצוב פנים", components: [] }] })],
+    ["topic preliminary intent", async (t) => t.db.collection("searchTopics").doc("tGap").update({ preliminaryIntent: "informational" })],
+    ["topic-intelligence page queries", async (t) => {
+      const ti = t.fake.rows("topicIntelligence").find((x) => x.topicId === "tBrand");
+      const pages = ti.gscCurrent.pages.map((pg) => (pg.pageKey === keyOf("contact") ? { ...pg, queries: ["הגר לושי"] } : pg));
+      await t.db.collection("topicIntelligence").doc(ti.id).update({ gscCurrent: { ...ti.gscCurrent, pages } });
+    }],
+    ["topic-intelligence market demand", async (t) => t.db.collection("topicIntelligence").doc(`${BIZ}_tGap`).update({ semrush: { status: "available", totalMonthlyVolume: 700 } })],
+    ["topic-intelligence content match", async (t) => {
+      const ti = t.fake.rows("topicIntelligence").find((x) => x.topicId === "tGap");
+      await t.db.collection("topicIntelligence").doc(ti.id).update({ pages: { ...ti.pages, contentMatched: [{ url: urlOf("interior"), pageKey: keyOf("interior") }] } });
+    }],
+    ["page title", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ title: "אדריכלות ותכנון" })],
+    ["page H1", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ h1: ["אדריכלות בקיסריה"] })],
+    ["page H2", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ h2: ["קיסריה"] })],
+    ["page role", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ role: { role: "article" } })],
+    ["page canonical state", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ canonical: { state: "points_elsewhere", target: urlOf("") } })],
+    ["page indexability", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ indexability: { state: "non_indexable", reasons: ["noindex"] } })],
+    ["page robots", async (t) => t.db.collection("seoPages").doc(`${BIZ}_architecture`).update({ robots: { state: "blocked" } })],
+    ["service alias", async (t) => t.db.collection("businessServices").doc("svcArch").update({ aliases: ["אדריכלית", "אדריכל"] })],
+    ["service facet geography", async (t) => t.db.collection("businessServices").doc("svcArch").update({ facets: { services: [], geographies: [{ value: "חדרה", provenance: "owner" }], audiences: [] } })],
+    ["business geographies", async (t) => t.db.collection("businesses").doc(BIZ).update({ geographicMarkets: ["קיסריה"] })],
+    ["brand terminology", async (t) => t.db.collection("businessKnowledge").doc("k1").update({ content: "סטודיו הגר" })],
+    ["opportunity owner status", async (t) => t.db.collection("opportunities").doc(t.f.opportunities[0].id).update({ status: "approved" })],
+    ["opportunity confidence", async (t) => t.db.collection("opportunities").doc(t.f.opportunities[0].id).update({ confidence: "low" })],
+    ["business decision policy", async (t) => t.db.collection("businesses").doc(BIZ).update({ decisionPolicy: { createBudgetPerRun: 0 } })]
+  ];
+  for (const [label, mutate] of CACHE_MUTATIONS) {
+    await test(`cache correctness: changing ${label} recomputes (never a false cache hit)`, async () => {
+      const t = await setupStore();
+      const r1 = await t.runM6();
+      assert.strictEqual(r1.decision, "computed");
+      assert.strictEqual((await t.runM6(NOW + 1)).decision, "cache_hit", "unchanged input is a cache hit");
+      await mutate(t);
+      const r2 = await t.runM6(NOW + 2);
+      assert.strictEqual(r2.decision, "computed", `${label} must change the fingerprint`);
+      assert.notStrictEqual(r2.runId, r1.runId, "a different input gets a different run record");
+    });
+  }
+
+  await test("cache correctness: an unrelated business field does not invalidate the cache", async () => {
+    const t = await setupStore();
+    await t.runM6();
+    await t.db.collection("businesses").doc(BIZ).update({ lastSyncAtMs: NOW + 5, baselineDate: "2026-10-11" });
+    assert.strictEqual((await t.runM6(NOW + 6)).decision, "cache_hit");
+  });
+
+  await test("cache correctness: edited or deleted engine output is repaired, never reported as unchanged", async () => {
+    const t = await setupStore();
+    await t.runM6();
+    const id = `${BIZ}_intent_${BIZ}_tRank`;
+    const before = t.decisions().find((d) => d.id === id);
+    // simulate tampering / a lost write: the decision document disappears
+    await t.db.collection("decisions").doc(id).delete();
+    const r = await t.runM6(NOW + 1);
+    assert.strictEqual(r.decision, "computed");
+    assert.strictEqual(t.decisions().find((d) => d.id === id).decision, before.decision);
+    // and an opportunity link that went missing is restored
+    const oppId = t.f.opportunities[0].id;
+    await t.db.collection("opportunities").doc(oppId).update({ decisionId: null });
+    assert.strictEqual((await t.runM6(NOW + 2)).decision, "computed");
+    assert.strictEqual(t.fake.rows("opportunities").find((o) => o.id === oppId).decisionId, id);
+    assert.strictEqual((await t.runM6(NOW + 3)).decision, "cache_hit");
+  });
+
+  // ------------------------------------------------------------- concurrency
+  await test("concurrency: two simultaneous runs -> one computes, the other is in_progress and writes nothing", async () => {
+    const t = await setupStore();
+    const [a, b] = await Promise.all([t.runM6(NOW), t.runM6(NOW)]);
+    const outcomes = [a.decision, b.decision].sort();
+    assert.deepStrictEqual(outcomes, ["computed", "in_progress"]);
+    const loser = a.decision === "in_progress" ? a : b;
+    assert.strictEqual(loser.written, 0);
+    assert.strictEqual(t.fake.rows("decisionRuns").length, 1, "exactly one run record");
+    assert.ok(t.decisions().every((d) => d.decisionHistory.length === 1), "no duplicated history");
+    assert.strictEqual(t.fake.rows("decisionRunLocks").length, 0, "lock released");
+    assert.strictEqual((await t.runM6(NOW + 1)).decision, "cache_hit");
+  });
+
+  await test("concurrency: a live lock held by another run -> in_progress, no writes", async () => {
+    const t = await setupStore();
+    await t.db.collection("decisionRunLocks").doc(BIZ).set({ businessId: BIZ, owner: "other", acquiredAtMs: NOW - 1000, leaseExpiresAtMs: NOW + 60000 });
+    const r = await t.runM6();
+    assert.strictEqual(r.decision, "in_progress");
+    assert.strictEqual(t.decisions().length, 0);
+    assert.strictEqual(t.fake.rows("decisionRuns").length, 0);
+    assert.strictEqual(t.fake.rows("decisionRunLocks")[0].owner, "other", "someone else's lock is never released");
+  });
+
+  // ---------------------------------------------------- partial-write recovery
+  await test("recovery: a write failure mid-way marks the run failed (never stuck running) and the next run repairs the state", async () => {
+    const clean = await setupStore();
+    await clean.runM6();
+    const expected = clean.decisions().map((d) => [d.id, d.decision, d.engineState, d.decisionHistory.length]).sort();
+
+    const t = await setupStore();
+    // writes: 1 lock, 2 run "running", 3 chunk 1, 4 chunk 2 (fails), ...
+    t.fake.failNthWrite(4);
+    await assert.rejects(() => t.store.runDecisionEngine({ businessId: BIZ, nowMs: NOW, batchSize: 3 }), /UNAVAILABLE/);
+    const failed = t.fake.rows("decisionRuns");
+    assert.strictEqual(failed.length, 1);
+    assert.strictEqual(failed[0].status, "failed");
+    assert.strictEqual(failed[0].failedPhase, "write");
+    assert.strictEqual(failed[0].chunksCommitted, 1);
+    assert.ok(failed[0].totalOps > 3 && failed[0].recovery);
+    assert.strictEqual(t.fake.rows("decisionRunLocks").length, 0, "lock released after the failure");
+    assert.ok(t.decisions().length < expected.length, "state is partial after the failure");
+
+    const r = await t.store.runDecisionEngine({ businessId: BIZ, nowMs: NOW + 1000, batchSize: 3 });
+    assert.strictEqual(r.decision, "computed", "a failed run never yields a cache hit");
+    assert.strictEqual(r.runId, failed[0].id, "same input -> same run record, retried");
+    const run = t.fake.rows("decisionRuns").find((x) => x.id === r.runId);
+    assert.strictEqual(run.status, "completed");
+    assert.strictEqual(run.attempt, 2);
+    assert.deepStrictEqual(t.decisions().map((d) => [d.id, d.decision, d.engineState, d.decisionHistory.length]).sort(), expected, "repaired to exactly the clean-run state, no duplicated history");
+    assert.strictEqual((await t.runM6(NOW + 2000)).decision, "cache_hit");
+  });
+
+  await test("recovery: a crashed run (expired lease, run left running) is taken over and recorded as abandoned", async () => {
+    const t = await setupStore();
+    await t.db.collection("decisionRunLocks").doc(BIZ).set({ businessId: BIZ, owner: "crashed", acquiredAtMs: NOW - 600000, leaseExpiresAtMs: NOW - 300000 });
+    await t.db.collection("decisionRuns").doc(`${BIZ}_run_stale`).set({ businessId: BIZ, status: "running", startedAtMs: NOW - 600000, inputHash: "old" });
+    const r = await t.runM6();
+    assert.strictEqual(r.decision, "computed");
+    const stale = t.fake.rows("decisionRuns").find((x) => x.id === `${BIZ}_run_stale`);
+    assert.strictEqual(stale.status, "abandoned");
+    assert.strictEqual(stale.abandonedByRunId, r.runId);
+    const run = t.fake.rows("decisionRuns").find((x) => x.id === r.runId);
+    assert.strictEqual(run.tookOverLockFrom, "crashed");
+    assert.strictEqual(t.fake.rows("decisionRunLocks").length, 0);
+    assert.ok(!t.fake.rows("decisionRuns").some((x) => x.status === "running"), "no run is left running");
+  });
+
   await test("lifecycle: owner rejection is durable; owner review never overwritten by an unchanged decision", async () => {
     const t = await setupStore();
     await t.runM6();

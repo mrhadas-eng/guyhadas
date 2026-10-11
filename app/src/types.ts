@@ -234,8 +234,13 @@ export interface SearchIntent {
 export interface DecisionRun {
   id: string;
   businessId: string;
-  status: "running" | "completed";
+  status: "running" | "completed" | "failed" | "abandoned";
+  startedAtMs?: number;
   completedAtMs?: number;
+  failedAtMs?: number;
+  failedPhase?: string;
+  error?: string | null;
+  attempt?: number;
   outcome?: "DECISIONS" | "WAIT_FOR_DATA";
   reason?: string;
   policy?: { createBudgetPerRun: number; createsPerClusterPerRun: number; sources: Record<string, string> };
