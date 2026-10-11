@@ -38,11 +38,12 @@ const crypto = require("crypto");
 const admin = require("firebase-admin");
 const { hashInput } = require("./apiUsage");
 const { decide, APPROVED } = require("./decisionRules");
+const { holdStatusAt } = require("./trackingRules");
 const cfg = require("./decisionConfig");
 
 const OPP_SOURCE = "opportunity_engine";
 const OWNER_REVIEWED = ["accepted", "rejected"];
-const FINGERPRINT_VERSION = 2;
+const FINGERPRINT_VERSION = 3; // v3: M7 active holds are an input (I-1)
 const LOCK_LEASE_MS = 5 * 60 * 1000; // > function timeout (120 s)
 const BATCH_SIZE = 400; // Firestore limit is 500 operations per batch
 
@@ -69,7 +70,7 @@ const latestCompleted = (list) =>
 async function loadInputs(businessId) {
   const db = admin.firestore();
   const byBiz = (c) => db.collection(c).where("businessId", "==", businessId).get();
-  const [bizDoc, servicesSnap, knowledgeSnap, topicsSnap, runsSnap, tiSnap, pagesSnap, baselinesSnap, oppSnap, oppRunsSnap, intentsSnap, decisionsSnap, decisionRunsSnap] = await Promise.all([
+  const [bizDoc, servicesSnap, knowledgeSnap, topicsSnap, runsSnap, tiSnap, pagesSnap, baselinesSnap, oppSnap, oppRunsSnap, intentsSnap, decisionsSnap, decisionRunsSnap, experimentsSnap] = await Promise.all([
     db.collection("businesses").doc(businessId).get(),
     byBiz("businessServices"),
     byBiz("businessKnowledge"),
@@ -82,7 +83,8 @@ async function loadInputs(businessId) {
     byBiz("opportunityRuns"),
     byBiz("searchIntents"),
     byBiz("decisions"),
-    byBiz("decisionRuns")
+    byBiz("decisionRuns"),
+    byBiz("seoExperiments")
   ]);
   const run = latestCompleted(rows(runsSnap));
   const decisionRuns = rows(decisionRunsSnap);
@@ -100,7 +102,9 @@ async function loadInputs(businessId) {
     intents: rows(intentsSnap),
     decisions: rows(decisionsSnap),
     decisionRuns,
-    lastRun: latestCompleted(decisionRuns)
+    lastRun: latestCompleted(decisionRuns),
+    // M7 (I-1): open experiments only - M6 reads them, never writes them
+    experiments: rows(experimentsSnap).filter((x) => x.status === "open")
   };
 }
 
@@ -138,8 +142,37 @@ const byId = (list) => [...list].sort((a, b) => String(a.id).localeCompare(Strin
 //   - decisions/searchIntents contents: M6's own output - covered by the
 //     separate STATE fingerprint below; only owner-set review statuses count
 //     as input.
-function semanticInput(inputs, policy) {
+// M7 hold vector (I-1): what the churn filter reads, with the hold status
+// evaluated at nowMs - so time passing changes the fingerprint only when a
+// hold starts, expires or is released.
+function holdVector(experiments, nowMs) {
+  return experiments
+    .map((x) => {
+      const st = holdStatusAt(x, nowMs);
+      return {
+        id: x.id,
+        status: st.reason,
+        holdUntilMs: x.hold ? x.hold.holdUntilMs : null,
+        materiality: x.hold ? x.hold.materiality : null,
+        classes: x.hold ? x.hold.classes || [] : [],
+        beforeEligibility: x.hold ? x.hold.beforeEligibility || {} : {},
+        released: !!(x.ownerHoldRelease && x.ownerHoldRelease.released),
+        unit: x.unit || null,
+        affectedPageKeys: x.affectedPageKeys || [],
+        intentIds: x.intentIds || [],
+        decisionIds: x.decisionIds || [],
+        signalKeys: x.signalKeys || [],
+        liveChangeEventIds: x.liveChangeEventIds || [],
+        startMs: x.startMs || null,
+        stageAEndPassed: x.stageWindows && x.stageWindows.A ? nowMs > x.stageWindows.A.toMs : null
+      };
+    })
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
+function semanticInput(inputs, policy, nowMs = Date.now()) {
   return {
+    activeHolds: holdVector(inputs.experiments || [], nowMs),
     fingerprintVersion: FINGERPRINT_VERSION,
     engineVersion: cfg.DECISION_ENGINE_VERSION,
     configVersion: cfg.DECISION_CONFIG_VERSION,
@@ -247,7 +280,7 @@ async function runDecisionEngine({ businessId, nowMs = Date.now(), batchSize = B
   const db = admin.firestore();
   const fingerprints = (inputs) => {
     const policy = cfg.resolvePolicy(inputs.business.decisionPolicy);
-    return { policy, inputHash: hashInput(semanticInput(inputs, policy)), stateHash: stateFingerprint(inputs.decisions, inputs.intents, inputs.opportunities) };
+    return { policy, inputHash: hashInput(semanticInput(inputs, policy, nowMs)), stateHash: stateFingerprint(inputs.decisions, inputs.intents, inputs.opportunities) };
   };
   const cacheHitOf = (inputs, fp) =>
     inputs.lastRun && inputs.lastRun.inputHash === fp.inputHash && inputs.lastRun.outputStateHash === fp.stateHash
@@ -332,6 +365,7 @@ async function computeAndWrite({ db, businessId, nowMs, inputs, fp, owner, tookO
       seoPages: inputs.seoPages,
       opportunities: inputs.opportunities,
       baseline: inputs.baseline,
+      experiments: inputs.experiments,
       policy,
       nowMs
     });
@@ -386,8 +420,12 @@ async function computeAndWrite({ db, businessId, nowMs, inputs, fp, owner, tookO
         ops.push({ ref, kind: "set", data: { ...fields, ownerStatus: "pending", ownerNote: "", ownerStatusResetReason: null, previousDecision: null, decisionHistory: [historyEntry(d, nowMs, runId, { event: "created" })], firstDecidedAtMs: nowMs, createdAt: now } });
         created++;
       } else if (prev.decision !== d.decision || prev.engineState === "superseded") {
-        const history = capHistory([...(prev.decisionHistory || []), historyEntry(d, nowMs, runId, { event: prev.engineState === "superseded" ? "reactivated" : "changed", previousDecision: prev.decision, ownerStatusAtChange: prev.ownerStatus || null })]);
-        const reset = prev.decision !== d.decision && OWNER_REVIEWED.includes(prev.ownerStatus);
+        // I-2: the decision's OWN implementation (-> MONITOR under
+        // observation) keeps the owner's accepted status; any other change
+        // follows the existing reset rule.
+        const ownImplementation = d.decision === "MONITOR" && (d.reasonCodes || []).includes("IMPLEMENTED_UNDER_OBSERVATION");
+        const history = capHistory([...(prev.decisionHistory || []), historyEntry(d, nowMs, runId, { event: ownImplementation ? "implemented" : prev.engineState === "superseded" ? "reactivated" : "changed", previousDecision: prev.decision, ownerStatusAtChange: prev.ownerStatus || null, ...(d.churnHold ? { experimentId: d.churnHold.experimentId } : {}) })]);
+        const reset = prev.decision !== d.decision && OWNER_REVIEWED.includes(prev.ownerStatus) && !ownImplementation;
         ops.push({ ref, kind: "update", data: { ...fields, previousDecision: prev.decision, decisionHistory: history, ...(reset ? { ownerStatus: "pending", ownerStatusResetReason: "decision_changed_since_owner_review" } : {}) } });
         if (reset) ownerReset++;
         changed++;

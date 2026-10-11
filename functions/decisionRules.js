@@ -21,6 +21,10 @@
 const crypto = require("crypto");
 const { matchesTerm } = require("./topicQualification");
 const cfg = require("./decisionConfig");
+// M7 integration (docs/M7_DESIGN.md §9): pure helpers only - M7 owns the
+// hold STATE, M6 owns the decision.
+const { holdStatusAt } = require("./trackingRules");
+const { classesFromActionDetails, materialityOf } = require("./predictionRules");
 
 const APPROVED = ["relevant", "priority", "brand_strategic"];
 const TOPIC_OPP_TYPES = new Set(["ranking_upside", "ctr_upside", "coverage_gap", "page_not_visible", "page_overlap_observed"]);
@@ -158,6 +162,8 @@ function buildContext(input) {
     opps,
     baseline: input.baseline || null,
     nowMs: input.nowMs,
+    // open M7 experiments (hold state); sorted for determinism
+    experiments: [...(input.experiments || [])].filter((x) => x.status === "open").sort((a, b) => String(a.experimentId || a.id).localeCompare(String(b.experimentId || b.id))),
     policy: input.policy || cfg.resolvePolicy(null),
     singleService: services.length === 1
   };
@@ -861,6 +867,8 @@ function intentDecisionBase(intent, opps, ownership, collision, cluster, ctx) {
     collision: { status: collision.status, reason: collision.reason, pairs: collision.pairs.slice(0, 6) },
     cluster,
     dependencies: [],
+    churnHold: null,
+    churnNotes: [],
     consolidation: null,
     newPageJustification: { evaluated: false, justified: false, distinctOn: [], reason: null, distinctValue: null },
     businessValue: intent.businessValue,
@@ -1128,6 +1136,144 @@ function decideIntent(intent, opps, ownership, collision, cluster, allIntents, o
   return finish();
 }
 
+
+// ---------------------------------------------------------------------------
+// M7 churn-hold filter (docs/M7_DESIGN.md §9.2-9.4). Applied AFTER rules
+// 1-17 have decided a unit and BEFORE the G11/G5 CREATE selection, as one
+// final row: it never reorders or changes the rules above. A held
+// recommendation is preserved in `churnHold` and returns when the hold ends.
+
+const CHURN_NOTE_CODES = ["RECENT_CHANGE_ON_PAGE", "RELATED_EXPERIMENT_ACTIVE"];
+
+function unitPagesOf(d) {
+  const keys = new Set();
+  if (d.recommendedPage && d.recommendedPage.kind === "existing" && d.recommendedPage.pageKey) keys.add(d.recommendedPage.pageKey);
+  if (d.pageKey) keys.add(d.pageKey);
+  if (d.consolidation) {
+    if (d.consolidation.recommendedOwnerPageKey) keys.add(d.consolidation.recommendedOwnerPageKey);
+    for (const k of d.consolidation.otherPageKeys || []) keys.add(k);
+  }
+  return keys;
+}
+
+function detailsOf(d) {
+  return d.actionDetails && d.actionDetails.length ? d.actionDetails : [d.actionDetail].filter(Boolean);
+}
+
+// Overlap of decision d with open experiment x -> { relation, effect, note }
+// effect: "monitor" (the implemented decision itself), "wait", "note", null.
+function overlapOf(d, x, ctx) {
+  if ((x.decisionIds || []).includes(d.decisionId)) return { relation: "implemented_decision", effect: "monitor" };
+  if (!["IMPROVE", "CREATE", "CONSOLIDATE"].includes(d.decision)) return { relation: null, effect: null };
+  const dMat = materialityOf(classesFromActionDetails(detailsOf(d)));
+  const xMat = (x.hold && x.hold.materiality) || null;
+  if (x.unit && x.unit.scope === "site") {
+    if (d.scope === "site") return (x.signalKeys || []).includes(d.signalKey) ? { relation: "site_same_signal", effect: "wait" } : { relation: null, effect: null };
+    return { relation: "site_wide_change", effect: "note", note: "RELATED_EXPERIMENT_ACTIVE" };
+  }
+  if (d.scope === "site") return { relation: null, effect: null };
+  const xPages = new Set([x.unit && x.unit.pageKey, ...(x.affectedPageKeys || [])].filter(Boolean));
+  const samePage = [...unitPagesOf(d)].some((k) => xPages.has(k));
+  const sameIntent = !!d.intentId && (x.intentIds || []).includes(d.intentId);
+  if (samePage && sameIntent) {
+    if (dMat === "major" || xMat === "major") return { relation: "same_page_same_intent", effect: "wait" };
+    const aEnd = x.stageWindows && x.stageWindows.A ? x.stageWindows.A.toMs : null;
+    return aEnd != null && ctx.nowMs > aEnd ? { relation: "same_page_same_intent", effect: "note", note: "RECENT_CHANGE_ON_PAGE" } : { relation: "same_page_same_intent", effect: "wait" };
+  }
+  if (samePage) return dMat === "major" ? { relation: "same_page_different_intent", effect: "wait" } : { relation: "same_page_different_intent", effect: "note", note: "RECENT_CHANGE_ON_PAGE" };
+  if (sameIntent) return d.decision === "IMPROVE" ? { relation: "different_page_same_intent", effect: "note", note: "RELATED_EXPERIMENT_ACTIVE" } : { relation: "different_page_same_intent", effect: "wait" };
+  return { relation: null, effect: null };
+}
+
+// §9.4 deterministic strong reasons to override a hold.
+function overrideOf(d, x, ov, status, ctx) {
+  if (status.reason === "owner_release") return "CHURN_OVERRIDE_OWNER_RELEASE";
+  if (status.reason === "change_not_in_effect") return "CHURN_OVERRIDE_CHANGE_NOT_IN_EFFECT";
+  if (!status.active) return "NOT_HELD";
+  if (detailsOf(d).includes("fix_eligibility")) {
+    const before = (x.hold && x.hold.beforeEligibility) || {};
+    const regressed = [...unitPagesOf(d)].some((k) => before[k] === "eligible" && ctx.pagesByKey.get(k) && eligibilityOf(ctx.pagesByKey.get(k)).state !== "eligible");
+    if (regressed) return "CHURN_OVERRIDE_ELIGIBILITY_REGRESSION";
+  }
+  if (ov.relation === "same_page_different_intent") {
+    const opps = ctx.opps.filter((o) => (d.opportunityIds || []).includes(o.id));
+    const newer = opps.length > 0 && opps.every((o) => (o.firstDetectedAtMs || 0) > (x.startMs || 0));
+    const xClasses = (x.hold && x.hold.classes) || [];
+    const different = classesFromActionDetails(detailsOf(d)).every((c) => !xClasses.includes(c));
+    if (newer && different) return "CHURN_OVERRIDE_NEW_OPPORTUNITY";
+  }
+  return null;
+}
+
+function applyChurnHold(d, ctx) {
+  const experiments = ctx.experiments || [];
+  if (!experiments.length) return d;
+  if (d.decision === "REJECT" && (d.reasonCodes || []).some((c) => c === "OWNER_REJECTED" || c === "TOPIC_NO_LONGER_APPROVED")) return d;
+  let hold = null;
+  const notes = [];
+  for (const x of experiments) {
+    const ov = overlapOf(d, x, ctx);
+    if (!ov.effect) continue;
+    const status = holdStatusAt(x, ctx.nowMs);
+    if (ov.effect === "monitor") {
+      if (status.active && !hold) hold = { x, ov, status };
+      continue;
+    }
+    if (ov.effect === "note") {
+      if (status.active) notes.push({ code: ov.note, experimentId: x.experimentId || x.id, relation: ov.relation });
+      continue;
+    }
+    const override = overrideOf(d, x, ov, status, ctx);
+    if (override === "NOT_HELD") continue;
+    if (override) {
+      notes.push({ code: override, experimentId: x.experimentId || x.id, relation: ov.relation, interference: true });
+      continue;
+    }
+    if (!hold) hold = { x, ov, status };
+  }
+  for (const n of notes) d.reasonCodes = uniq([...d.reasonCodes, n.code]);
+  d.churnNotes = notes;
+  if (!hold) return d;
+  const { x, ov } = hold;
+  const xid = x.experimentId || x.id;
+  d.churnHold = {
+    experimentId: xid,
+    overlap: ov.relation,
+    heldDecision: d.decision,
+    heldActionDetail: d.actionDetail || null,
+    heldActionDetails: detailsOf(d),
+    heldRecommendedPage: d.recommendedPage,
+    heldReasonCodes: d.reasonCodes,
+    holdUntilMs: x.hold ? x.hold.holdUntilMs : null,
+    materiality: x.hold ? x.hold.materiality : null,
+    changeEventIds: x.liveChangeEventIds || [],
+    basis: "observed",
+    note: "the recommendation is kept and returns when the observation hold ends (M7 experiment state)"
+  };
+  d.evidence = [...(d.evidence || []), ev(`seoExperiments/${xid}#hold`, "m7_experiment", "seoExperiments", xid, "hold", `שינוי שבוצע (${(x.liveChangeEventIds || []).join(", ")}) נמצא במעקב`, "observed", null)];
+  if (ov.relation === "implemented_decision") {
+    Object.assign(d, {
+      decision: "MONITOR",
+      actionDetail: null,
+      reasonCodes: uniq(["IMPLEMENTED_UNDER_OBSERVATION", ...d.reasonCodes]),
+      blockingConditions: uniq([...(d.blockingConditions || []), "WAIT_FOR_OBSERVATION_WINDOW"]),
+      dependencies: [...(d.dependencies || []), { experimentId: xid, relation: "under_observation" }],
+      alternativesConsidered: [{ decision: d.churnHold.heldDecision, rejectedBecause: ["IMPLEMENTED_UNDER_OBSERVATION"] }, ...(d.alternativesConsidered || [])]
+    });
+  } else {
+    Object.assign(d, {
+      decision: "WAIT",
+      actionDetail: null,
+      reasonCodes: uniq(["RECENT_CHANGE_UNDER_OBSERVATION", ...d.reasonCodes]),
+      blockingConditions: uniq([...(d.blockingConditions || []), "WAIT_FOR_OBSERVATION_WINDOW"]),
+      dependencies: [...(d.dependencies || []), { experimentId: xid, relation: "held_by_observation" }],
+      alternativesConsidered: [{ decision: d.churnHold.heldDecision, rejectedBecause: ["RECENT_CHANGE_UNDER_OBSERVATION"] }, ...(d.alternativesConsidered || [])]
+    });
+  }
+  delete d._createCandidate; // a held CREATE never consumes G5/G11 budget
+  return d;
+}
+
 // ---------------------------------------------------------------------------
 // G11 + G5 selection (run level)
 
@@ -1196,6 +1342,8 @@ function decidePage(pageKey, opps, ownerPageKeys, consolidations, ctx) {
     collision: null,
     cluster: null,
     dependencies: [],
+    churnHold: null,
+    churnNotes: [],
     consolidation: null,
     newPageJustification: { evaluated: false, justified: false, distinctOn: [], reason: "page-scope decisions never create pages", distinctValue: null },
     businessValue: null,
@@ -1243,6 +1391,8 @@ function decideSite(signalKey, opps, ctx) {
     collision: null,
     cluster: null,
     dependencies: [],
+    churnHold: null,
+    churnNotes: [],
     consolidation: null,
     newPageJustification: { evaluated: false, justified: false, distinctOn: [], reason: "site-scope decisions never create pages", distinctValue: null },
     businessValue: null,
@@ -1271,6 +1421,8 @@ function decideSite(signalKey, opps, ctx) {
 
 function summaryOf(d) {
   const page = d.recommendedPage && d.recommendedPage.url;
+  if (d.churnHold && d.decision === "MONITOR") return "השינוי שבוצע נמצא במעקב (תצפית) — לא ממליצים על שינוי נוסף בדף בינתיים. זה לא מעיד על תוצאה.";
+  if (d.churnHold && d.decision === "WAIT") return `מוחזק: שינוי קודם ${d.churnHold.overlap === "site_same_signal" ? "באתר" : "בדף או בכוונת החיפוש"} נמצא במעקב. ההמלצה (${d.churnHold.heldDecision}) נשמרה ותחזור בסוף חלון המעקב.`;
   switch (d.decision) {
     case "CREATE":
       return `דף חדש מוצדק לכוונת החיפוש „${d.unitTitle}“ (${(d.newPageJustification.distinctOn || []).join(", ") || "אין דף קיים"}). זו המלצה בלבד — המערכת לא יוצרת דף, כתובת או תוכן.`;
@@ -1353,6 +1505,7 @@ function decide(input) {
     collisions.set(i.intentId, col);
     decisions.push(decideIntent(i, byIntent.get(i.intentId) || [], own, col, clusterInfo(i), intents, ownerships, ctx));
   }
+  for (const d of decisions) applyChurnHold(d, ctx);
   const selection = selectCreates(decisions, intentsById, ctx);
 
   const ownerPageKeys = new Set([...ownerships.values()].filter((o) => o.acceptable && o.owner).map((o) => o.owner.pageKey));
@@ -1362,6 +1515,7 @@ function decide(input) {
   }
   for (const [pageKey, opps] of [...byPage.entries()].sort((a, b) => a[0].localeCompare(b[0]))) decisions.push(decidePage(pageKey, opps, ownerPageKeys, consolidations, ctx));
   for (const [key, opps] of [...bySite.entries()].sort((a, b) => a[0].localeCompare(b[0]))) decisions.push(decideSite(key, opps, ctx));
+  for (const d of decisions.filter((x) => x.scope !== "intent")) applyChurnHold(d, ctx);
 
   for (const d of decisions) {
     d.summary = summaryOf(d);
