@@ -2,7 +2,7 @@
 
 **`docs/MASTER.md` is canonical.** Design: `docs/M7_DESIGN.md` (approved with owner decisions P1–P3, §15). Contract: `docs/M7_IMPLEMENTATION_BRIEF.md`. This file records what was actually built, the implementation decisions, deviations, tests and the validation state.
 
-**Status: IMPLEMENTED and TESTED on branch `feature/m7-tracking` (PR against `main`, not merged by Claude). Live Hagar validation: NOT YET PERFORMED.** It needs the owner to merge and deploy; the checklist is in §6.
+**Status: IMPLEMENTED and TESTED on branch `feature/m7-tracking` (PR #47 against `main`, not merged by Claude). Live Hagar validation: NOT YET PERFORMED.** It needs the owner to merge and deploy; the checklist is in §6.
 
 ---
 

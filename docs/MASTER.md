@@ -1989,7 +1989,7 @@ Not implemented (M7+): ImpactPrediction, implementation capture, change events, 
 
 ### M7 — Prediction, Change & Experiment Tracking
 
-**Status: IMPLEMENTED and TESTED on `feature/m7-tracking` (PR to `main`, owner review). Not merged; live Hagar validation pending owner deploy.** Design: `docs/M7_DESIGN.md` (owner decisions P1–P3); implementation, deviations and the validation checklist: `docs/M7_IMPLEMENTATION_NOTES.md`.
+**Status: IMPLEMENTED and TESTED on `feature/m7-tracking` (PR #47, owner review). Not merged; live Hagar validation pending owner deploy.** Design: `docs/M7_DESIGN.md` (owner decisions P1–P3); implementation, deviations and the validation checklist: `docs/M7_IMPLEMENTATION_NOTES.md`.
 
 What it covers:
 - **Provider-free ImpactPrediction.** Versioned heuristic priors × modifiers give three separate whole-day ranges (first signal / SEO signal / business impact). Magnitudes are ordinal, confidence is capped at medium, and unknowns are explicit. A prediction is provisional only for owner-accepted IMPROVE/CREATE/CONSOLIDATE decisions on an explicit tracking run, and is committed at implementation from pre-change evidence only.
@@ -2038,7 +2038,7 @@ Not implemented (M8+): measurement, after-snapshots, signal states, attribution 
 
 ### M7 — Prediction, Change & Experiment Tracking **(CURRENT MILESTONE — implemented, in review)**
 
-**Status: IMPLEMENTED and TESTED (`feature/m7-tracking`, PR to `main`); live Hagar validation pending owner merge + deploy.** Design `docs/M7_DESIGN.md`; brief `docs/M7_IMPLEMENTATION_BRIEF.md`; implementation notes `docs/M7_IMPLEMENTATION_NOTES.md`.
+**Status: IMPLEMENTED and TESTED (`feature/m7-tracking`, PR #47); live Hagar validation pending owner merge + deploy.** Design `docs/M7_DESIGN.md`; brief `docs/M7_IMPLEMENTATION_BRIEF.md`; implementation notes `docs/M7_IMPLEMENTATION_NOTES.md`.
 
 - ImpactPrediction (deterministic, versioned heuristics; ranges for three separate stages; ordinal magnitudes; confidence with reasons; unknowns explicit) — clarification: §38 and the M6 design already place prediction in M7
 - implementation capture (owner-recorded; acceptance is never implementation)
