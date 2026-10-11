@@ -310,7 +310,13 @@ function pageBaseline(p) {
     inboundInternalCount: p.links ? p.links.inboundInternalCount : null,
     outboundInternalCount: p.links ? p.links.outboundInternalCount : null,
     orphan: p.orphan ? p.orphan.state : "unknown",
-    diagnostics: (p.diagnostics || []).map((d) => d.code)
+    diagnostics: (p.diagnostics || []).map((d) => d.code),
+    // additive (M7 crawl verification of recorded changes); older baselines
+    // simply lack these fields
+    h2: (p.h2 || []).slice(0, 10),
+    finalUrl: p.finalUrl || null,
+    canonicalTarget: p.canonical ? p.canonical.target || null : null,
+    structuredDataTypes: p.structuredData && Array.isArray(p.structuredData.types) ? [...p.structuredData.types].sort() : []
   };
 }
 
@@ -333,18 +339,55 @@ function topicBaseline(t) {
   };
 }
 
+// Pages / topics that MUST be in a baseline regardless of the cap (backlog
+// #39): every page and topic referenced by an owner-accepted active decision
+// or an open M7 experiment - they are the before-snapshots M7 links to.
+function referencedKeys(decisions, intents, experiments) {
+  const pageKeys = new Set();
+  const topicIds = new Set();
+  const intentTopics = new Map(intents.map((i) => [i.id, i.topicIds || []]));
+  for (const d of decisions) {
+    if (d.ownerStatus !== "accepted" || d.engineState === "superseded") continue;
+    const rp = d.recommendedPage || {};
+    if (rp.pageKey) pageKeys.add(rp.pageKey);
+    if (d.pageKey) pageKeys.add(d.pageKey);
+    for (const k of (d.consolidation && d.consolidation.otherPageKeys) || []) pageKeys.add(k);
+    for (const t of intentTopics.get(d.intentId) || []) topicIds.add(t);
+  }
+  for (const x of experiments) {
+    if (x.status !== "open") continue;
+    if (x.unit && x.unit.pageKey && x.unit.pageKey !== "site") pageKeys.add(x.unit.pageKey);
+    for (const k of x.affectedPageKeys || []) pageKeys.add(k);
+    for (const i of x.intentIds || []) for (const t of intentTopics.get(i) || []) topicIds.add(t);
+  }
+  return { pageKeys, topicIds };
+}
+
+// Required items first (all of them), then the rest in key order up to the
+// cap. The cap itself is unchanged - it only stops limiting what M7 needs.
+function selectWithPriority(items, keyOf, required, cap) {
+  const sorted = items.slice().sort((a, b) => String(keyOf(a)).localeCompare(String(keyOf(b))));
+  const req = sorted.filter((x) => required.has(keyOf(x)));
+  const rest = sorted.filter((x) => !required.has(keyOf(x))).slice(0, Math.max(0, cap - req.length));
+  const chosen = new Set([...req, ...rest]);
+  return { list: sorted.filter((x) => chosen.has(x)), required: req.length, truncated: sorted.length - chosen.size };
+}
+
 // Captures an immutable baseline: version n+1, never an update. Whatever is
 // unavailable is recorded as such. Returns the baseline doc.
-async function captureBaseline({ businessId, capturedBy, note, nowMs = Date.now() }) {
+async function captureBaseline({ businessId, capturedBy, note, nowMs = Date.now(), includePageKeys = [], includeTopicIds = [] }) {
   const db = admin.firestore();
   const byBiz = (c) => db.collection(c).where("businessId", "==", businessId).get();
-  const [runsSnap, tiSnap, pagesSnap, prevSnap, searchSnap, trafficSnap] = await Promise.all([
+  const [runsSnap, tiSnap, pagesSnap, prevSnap, searchSnap, trafficSnap, decSnap, intentSnap, expSnap] = await Promise.all([
     byBiz("intelligenceRuns"),
     byBiz("topicIntelligence"),
     byBiz("seoPages"),
     byBiz("baselines"),
     byBiz("searchSnapshots"),
-    byBiz("trafficSnapshots")
+    byBiz("trafficSnapshots"),
+    byBiz("decisions"),
+    byBiz("searchIntents"),
+    byBiz("seoExperiments")
   ]);
   const rows = (s) => s.docs.map((d) => ({ id: d.id, ...d.data() }));
   const run = rows(runsSnap)
@@ -355,6 +398,11 @@ async function captureBaseline({ businessId, capturedBy, note, nowMs = Date.now(
   const previous = rows(prevSnap).sort((a, b) => b.version - a.version)[0] || null;
   const version = previous ? previous.version + 1 : 1;
   const ctx = businessContext({ latestSearchSnapshot: latestBy(rows(searchSnap), "retrievedAt"), latestTrafficSnapshot: latestBy(rows(trafficSnap), "retrievedAt") });
+  const refs = referencedKeys(rows(decSnap), rows(intentSnap), rows(expSnap));
+  for (const k of includePageKeys) refs.pageKeys.add(k);
+  for (const t of includeTopicIds) refs.topicIds.add(t);
+  const topicSel = selectWithPriority(topics, (t) => t.topicId, refs.topicIds, BASELINE_MAX_TOPICS);
+  const pageSel = selectWithPriority(pages, (p) => p.pageKey, refs.pageKeys, BASELINE_MAX_PAGES);
 
   const content = {
     businessId,
@@ -363,8 +411,17 @@ async function captureBaseline({ businessId, capturedBy, note, nowMs = Date.now(
     analysisVersion: run ? run.analysisVersion : null,
     period: { gscQueryPage: run && run.gsc ? run.gsc.period : null, searchConsoleSnapshot: ctx.searchConsole.period || null, traffic: ctx.traffic.period || null },
     business: ctx,
-    topics: topics.sort((a, b) => String(a.topicId).localeCompare(String(b.topicId))).slice(0, BASELINE_MAX_TOPICS).map(topicBaseline),
-    pages: pages.sort((a, b) => String(a.pageKey).localeCompare(String(b.pageKey))).slice(0, BASELINE_MAX_PAGES).map(pageBaseline),
+    topics: topicSel.list.map(topicBaseline),
+    pages: pageSel.list.map(pageBaseline),
+    selection: {
+      rule: "pages/topics referenced by accepted decisions and open experiments first (never cut), then key order up to the cap",
+      pageCap: BASELINE_MAX_PAGES,
+      topicCap: BASELINE_MAX_TOPICS,
+      requiredPages: pageSel.required,
+      requiredTopics: topicSel.required,
+      pagesNotIncluded: pageSel.truncated,
+      topicsNotIncluded: topicSel.truncated
+    },
     technicalSummary: run ? run.summary : null,
     geoReadiness: run ? { summary: run.geoReadiness.summary, signals: run.geoReadiness.signals.map((s) => ({ key: s.key, status: s.status, observation: s.observation })) } : null,
     serpContext: { status: "not_available", reason: "no SERP data provider configured" },
