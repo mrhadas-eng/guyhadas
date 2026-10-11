@@ -256,3 +256,54 @@ export interface DecisionEngineResult {
 export function runDecisionEngine(businessId: string): Promise<DecisionEngineResult> {
   return callFunction<DecisionEngineResult>("visibilityRunDecisionEngine", { businessId });
 }
+
+// --- M7 Prediction, Change & Experiment Tracking (functions/trackingEngine.js) ---
+// Explicit owner actions only (button / form). Firestore only - no provider.
+export interface TrackingRunResult {
+  cacheHit: boolean;
+  decision: "computed" | "cache_hit" | "in_progress";
+  runId?: string;
+  providerCalled: false;
+  written: number;
+  summary: Record<string, number> | null;
+}
+
+export function runTracking(businessId: string): Promise<TrackingRunResult> {
+  return callFunction<TrackingRunResult>("visibilityRunTracking", { businessId });
+}
+
+export interface RecordImplementationInput {
+  decisionId: string;
+  implementedDate: string;
+  publishedDate?: string | null;
+  targetUrl?: string | null;
+  changedElements: string[];
+  intentChange?: boolean;
+  implementationMatch: "full" | "partial" | "different";
+  deviationNote?: string | null;
+  responsibleActor: { type: "owner" | "contractor" | "agency" | "system"; name?: string | null };
+  implementationNotes?: string;
+  ownerAttestation: boolean;
+}
+
+export interface RecordImplementationResult {
+  decision?: "in_progress";
+  duplicate?: boolean;
+  reverted?: boolean;
+  changeEventId?: string;
+  predictionId?: string;
+  predictionDerivation?: string;
+  experimentId?: string | null;
+  experimentState?: string | null;
+  beforeSnapshot?: { status: string; reason?: string };
+  providerCalled: false;
+  written: number;
+}
+
+export function recordImplementation(businessId: string, input: RecordImplementationInput): Promise<RecordImplementationResult> {
+  return callFunction<RecordImplementationResult>("visibilityRecordImplementation", { businessId, ...input });
+}
+
+export function revertImplementation(businessId: string, changeEventId: string, revertNote: string): Promise<RecordImplementationResult> {
+  return callFunction<RecordImplementationResult>("visibilityRecordImplementation", { businessId, action: "revert", changeEventId, revertNote });
+}

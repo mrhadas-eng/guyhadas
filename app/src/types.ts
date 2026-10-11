@@ -211,6 +211,147 @@ export interface Decision {
   decisionRunId?: string;
   modelVersion?: number;
   configVersion?: number;
+  // M7 churn hold applied by M6 (docs/M7_DESIGN.md §9): the held
+  // recommendation is preserved here and returns when the hold ends.
+  churnHold?: ChurnHold | null;
+  churnNotes?: { code: string; experimentId: string; relation: string; interference?: boolean }[];
+}
+
+export interface ChurnHold {
+  experimentId: string;
+  overlap: string;
+  heldDecision: DecisionValue;
+  heldActionDetail: string | null;
+  heldActionDetails: string[];
+  heldRecommendedPage: Decision["recommendedPage"];
+  holdUntilMs: number | null;
+  materiality: string | null;
+  changeEventIds: string[];
+}
+
+// --- M7 Prediction, Change & Experiment Tracking (docs/M7_DESIGN.md) ---
+export interface PredictionStage {
+  status: "range" | "not_applicable" | "unknown" | "blocked_by_eligibility";
+  minDays: number | null;
+  maxDays: number | null;
+  minWeeks: number | null;
+  maxWeeks: number | null;
+  label: string;
+}
+export interface OrdinalImpact {
+  direction: string;
+  band: "none" | "small" | "moderate" | "large" | "unknown";
+  basis: string;
+  note: string;
+}
+export interface ImpactPrediction {
+  id: string;
+  predictionId: string;
+  businessId: string;
+  kind: "provisional" | "committed" | "experiment";
+  status: "provisional" | "committed" | "superseded" | "withdrawn" | "active";
+  decisionId: string | null;
+  changeEventId?: string | null;
+  experimentId?: string;
+  predictionVersion?: number;
+  targetType: string;
+  targetId: string | null;
+  changeType: string | null;
+  changeClasses: string[];
+  predictionState: "ranges" | "blocked_by_eligibility";
+  eligibility?: { state: string; blocker: string | null; note?: string };
+  stages: { A: PredictionStage; B: PredictionStage; C: PredictionStage };
+  predictedVisibilityImpact?: OrdinalImpact;
+  predictedRankingImpact?: OrdinalImpact;
+  predictedTrafficImpact?: OrdinalImpact;
+  businessImpact?: { measurable: boolean; scope: string | null; note: string };
+  confidence: "low" | "medium" | "high";
+  confidenceReasons: string[];
+  predictionFactors?: { key: string; value: unknown; basis: string; effect: string; note?: string }[];
+  unknownFactors?: { key: string; label: string; reason: string }[];
+  retroactive: boolean;
+  derivation: string;
+  committedTo?: string | null;
+  commitBasis?: string;
+  supersededBy?: string | null;
+  predictionModelVersion: number;
+  predictionConfigVersion: number;
+  createdAtMs?: number;
+  disclaimer?: string;
+}
+export type ImplementationStatus = "recorded" | "verified" | "not_observed" | "not_verifiable" | "contradicted" | "reverted";
+export interface SeoChangeEvent {
+  id: string;
+  changeEventId: string;
+  businessId: string;
+  decisionId: string;
+  decision: string;
+  scope: string;
+  targetPageKey: string;
+  targetUrl: string | null;
+  recommendedPageKey: string | null;
+  changeType: string | null;
+  changeClasses: string[];
+  changedElements: string[];
+  implementationDate: string;
+  publicationDate: string | null;
+  startMs: number;
+  implementationStatus: ImplementationStatus;
+  implementationMatch: "full" | "partial" | "different";
+  deviationNote: string | null;
+  responsibleActor: { type: string; name: string | null };
+  implementationNotes: string;
+  beforeSnapshot: { status: "linked" | "missing" | "contaminated"; baselineId: string | null; reason?: string; capturedAtRecording?: boolean };
+  afterSnapshot: { status: "pending"; reservedFor: string; earliestCaptureFromMs?: number };
+  predictionId: string;
+  experimentId: string | null;
+  lateJoin?: boolean;
+  verification: { status: string; checks: { element: string; result: string; before: unknown; after: unknown; note?: string }[]; note: string; checkedInRunId: string; atMs: number } | null;
+  history: { at: number; event: string }[];
+  createdAtMs: number;
+}
+export interface SeoExperiment {
+  id: string;
+  experimentId: string;
+  businessId: string;
+  unit: { scope: "page" | "site"; pageKey: string };
+  affectedPageKeys: string[];
+  intentIds: string[];
+  decisionIds: string[];
+  changeEventIds: string[];
+  groupedChangeEventIds: string[];
+  lateChangeEventIds: string[];
+  liveChangeEventIds: string[];
+  baselineSnapshot: { status: string; baselineId: string | null };
+  predictionId: string | null;
+  startMs: number;
+  startDate: string | null;
+  stageWindows: { A: { fromMs: number; toMs: number } | null; B: { fromMs: number; toMs: number } | null; C: { fromMs: number; toMs: number } | null };
+  observationWindowEndMs: number;
+  businessWindowEndMs: number | null;
+  extensions: number;
+  timePhase: string;
+  timeState: string;
+  warnings: string[];
+  interferences: { type: string; changeEventId?: string; experimentId?: string; atMs: number }[];
+  hold: { holdUntilMs: number | null; materiality: string | null; classes: string[]; releasedBy: { reason: string; atMs: number | null; note: string | null } | null };
+  ownerHoldRelease: { released: boolean; note: string; atMs: number } | null;
+  relatedExperimentIds: { experimentId: string; relation: string }[];
+  previousExperimentId: string | null;
+  nextExperimentId: string | null;
+  status: "open" | "closed";
+  closedReason: string | null;
+  outcome: null;
+  signalState: null;
+  attributionConfidence: null;
+}
+export interface TrackingRun {
+  id: string;
+  status: "running" | "completed" | "failed" | "abandoned";
+  startedAtMs?: number;
+  completedAtMs?: number;
+  failedAtMs?: number;
+  summary?: Record<string, number>;
 }
 
 export interface SearchIntent {
