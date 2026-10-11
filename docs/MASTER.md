@@ -1959,7 +1959,7 @@ Not implemented (M5+): opportunities, decisions, intent ownership, cannibalizati
 
 ### M5 — Opportunity Engine
 
-**Status: IMPLEMENTED + TESTED on `feature/m5-opportunity-engine`; live Hagar validation pending deploy.** Design and decisions: `docs/M5_OPPORTUNITY_ENGINE_DESIGN.md`.
+**Status: DONE — merged to `main` (`2fbb43d`) and live-validated on Hagar in October 2026 (real run; identical rerun = cache hit, no writes).** Design and decisions: `docs/M5_OPPORTUNITY_ENGINE_DESIGN.md`.
 
 Deterministic, evidence-backed opportunity **candidates** from existing M3.2/M4 data only (no provider calls). Market demand (Semrush, unknown when unavailable) and observed search visibility (Search Console) are separate signals — Search Console impressions are never treated as market demand. Kinds: technical blockers on topic pages, ranking and CTR upside (CTR compared only with the site's own), coverage gaps, pages without visibility, internal linking for topic pages, observed page overlap (monitor, not a cannibalization verdict), and entity/fact clarity. Ordinal, labelled factors; priority band and confidence with reasons; embedded evidence referencing source documents; baseline id and impact inputs on every opportunity. Extends the existing `opportunities` collection (`source: "opportunity_engine"`); owner status never overwritten; rejection durable; NO_ACTION / WAIT_FOR_DATA recorded per topic on `opportunityRuns`; identical analysis is a $0 cache hit with no writes.
 
@@ -1980,7 +1980,9 @@ Not implemented (M6+): SearchIntent, ownership, cannibalization, final decisions
 - immutable baselines
 - SERP context
 
-### M5 — Opportunity Engine **(CURRENT NEXT MILESTONE)**
+### M5 — Opportunity Engine
+
+**Status: DONE — merged (`2fbb43d`) and live-validated on Hagar in October 2026.**
 
 - evidence-backed opportunities
 - CREATE vs IMPROVE candidates
@@ -1988,7 +1990,9 @@ Not implemented (M6+): SearchIntent, ownership, cannibalization, final decisions
 - business value
 - prioritization
 
-### M6 — Decision Engine
+### M6 — Decision Engine **(CURRENT NEXT MILESTONE — design phase)**
+
+**Status: DESIGN (revision 2, owner review applied) — `docs/M6_DECISION_ENGINE_DESIGN.md`; no implementation yet.**
 
 - Search Intent object
 - canonical ownership
