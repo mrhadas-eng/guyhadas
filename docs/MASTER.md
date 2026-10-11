@@ -1707,6 +1707,20 @@ SEOExperiment
 
 ---
 
+## 38.12 Stage ownership by milestone (clarification, M7 design)
+
+This makes explicit what §38 implies; it does not change §38's semantics.
+
+| Loop stage | Milestone | Notes |
+|---|---|---|
+| PREDICT | M7 | Heuristic, versioned priors; ranges per stage (A first signal, B SEO signal, C business impact); ordinal magnitudes and ordinal confidence in v1 (numeric calibrated confidence such as "78%" in §38.2 is an M9 output). Predictions are created for owner-accepted decisions and frozen when the implementation is recorded. |
+| IMPLEMENT (capture) | M7 | Owner/operator records the implementation; an `SEOChangeEvent` is created; the change itself is crawl-verified where observable. Accepting a decision is never implementation. |
+| MONITOR (lifecycle) | M7 | Observation windows and time-based / structural states only: `TOO_EARLY`, `CHANGE_IN_OBSERVATION_WINDOW`, structural `INCONCLUSIVE`, plus lifecycle additions `PENDING_PUBLICATION` and `PENDING_MEASUREMENT` that make no signal claim. Churn-prevention holds. |
+| MEASURE, COMPARE PREDICTION vs ACTUAL, attribution | M8 | Signal states `NO_SIGNAL_YET`, `EARLY_SIGNAL`, `SEO_SIGNAL`, `MEANINGFUL_IMPACT`, `UNDERPERFORMING`, `FAILED` are set only by M8 with measurement evidence; after-snapshots; attribution confidence; outcome. |
+| LEARN | M9 | Prediction error, calibration of priors / windows / holds, numeric confidence, learned models. |
+
+---
+
 # 39. LLM Website Understanding
 
 The system must eventually include a dedicated **LLM Website Understanding** capability.
@@ -1965,6 +1979,14 @@ Deterministic, evidence-backed opportunity **candidates** from existing M3.2/M4 
 
 Not implemented (M6+): SearchIntent, ownership, cannibalization, final decisions, ImpactPrediction, change events, measurement, learning.
 
+### M6 — Decision Engine
+
+**Status: DONE — merged (`7378618`), deployed and live-validated on Hagar in October 2026** (phone-evidence fix #36 in M4, `d5d1f94`, re-validated). Design: `docs/M6_DECISION_ENGINE_DESIGN.md`; implementation: `docs/M6_IMPLEMENTATION_NOTES.md`.
+
+Persistent SearchIntents, ownership, cannibalization and one explainable decision per intent / page / site unit (CREATE / IMPROVE / CONSOLIDATE / WAIT / MONITOR / REJECT) with proliferation guardrails G1–G11, provider-free, complete input + output-state cache fingerprints, single-flight runs and recoverable writes.
+
+Not implemented (M7+): ImpactPrediction, implementation capture, change events, experiments, observation windows, churn prevention (M7); measurement (M8); learning (M9).
+
 ---
 
 # 41. Future Milestones
@@ -1990,9 +2012,9 @@ Not implemented (M6+): SearchIntent, ownership, cannibalization, final decisions
 - business value
 - prioritization
 
-### M6 — Decision Engine **(CURRENT MILESTONE)**
+### M6 — Decision Engine
 
-**Status: IMPLEMENTED + TESTED on `feature/m6-decision-engine` (not merged, not deployed); live Hagar validation pending.** Design: `docs/M6_DECISION_ENGINE_DESIGN.md`; implementation decisions and deviations: `docs/M6_IMPLEMENTATION_NOTES.md`.
+**Status: DONE — merged (`7378618`), deployed and live-validated on Hagar in October 2026.** Live validation surfaced an M4 evidence-quality defect (phone-number consistency, #36), fixed in the evidence layer (`d5d1f94`) and re-validated in production; M6 decision semantics were unchanged. Email-evidence quality (#37) is tracked separately and is not an M7 blocker. Design: `docs/M6_DECISION_ENGINE_DESIGN.md`; implementation decisions and deviations: `docs/M6_IMPLEMENTATION_NOTES.md`.
 
 - Search Intent object
 - canonical ownership
@@ -2000,12 +2022,18 @@ Not implemented (M6+): SearchIntent, ownership, cannibalization, final decisions
 - CREATE / IMPROVE / CONSOLIDATE / WAIT / MONITOR / REJECT
 - explainability
 
-### M7 — Change / Experiment Tracking
+### M7 — Prediction, Change & Experiment Tracking **(CURRENT MILESTONE — design phase)**
 
-- SEOChangeEvent
-- SEOExperiment
-- observation windows
-- recommendation churn prevention
+**Status: DESIGN — `docs/M7_DESIGN.md` (+ `docs/M7_IMPLEMENTATION_BRIEF.md`); no implementation yet.**
+
+- ImpactPrediction (deterministic, versioned heuristics; ranges for three separate stages; ordinal magnitudes; confidence with reasons; unknowns explicit) — clarification: §38 and the M6 design already place prediction in M7
+- implementation capture (owner-recorded; acceptance is never implementation)
+- SEOChangeEvent (with crawl verification of the change itself)
+- SEOExperiment (deterministic grouping, extension)
+- observation windows (dynamic) and time-based lifecycle states only
+- recommendation churn prevention (state in M7, applied by M6 as WAIT/MONITOR with evidence)
+
+Boundary: M7 never measures outcomes, sets signal states (NO_SIGNAL_YET … FAILED), computes attribution, or calibrates — see §38.12.
 
 ### M8 — Measurement
 
