@@ -322,6 +322,17 @@ const byType = (opps, type) => opps.filter((o) => o.type === type);
     assert.strictEqual(opps.filter((o) => o.type === "coverage_gap").length, 1, "no duplicate re-proposal");
   });
 
+  await test("issue #36: phone evidence that is insufficient (unknown) or consistent (present) creates no business-facts opportunity", async () => {
+    for (const status of ["unknown", "present"]) {
+      const t = await setup((f) => {
+        f.run.geoReadiness.signals = f.run.geoReadiness.signals.map((s) => (s.key === "fact_consistency" ? { ...s, status, insufficientEvidence: status === "unknown" } : s));
+        return f;
+      });
+      await t.run();
+      assert.strictEqual(byType(t.engineOpps(), "entity_clarity").length, 0, status);
+    }
+  });
+
   await test("M6 compatibility: an M5 re-run never resets opportunities.decisionId", async () => {
     const t = await setup();
     await t.run();

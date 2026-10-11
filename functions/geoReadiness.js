@@ -11,6 +11,7 @@
 // status: present | partial | missing | unknown
 
 const { normalizePhrase } = require("./seedBuilder");
+const { comparePhones } = require("./phoneEvidence");
 
 const ORG_TYPES = /^(Organization|LocalBusiness|ProfessionalService|HomeAndConstructionBusiness|GeneralContractor|Corporation|Store|.*Business)$/;
 
@@ -86,10 +87,12 @@ function computeGeoReadiness(pages, ctx) {
   const types = [...new Set(sdPages.flatMap((p) => p.structuredData.types || []))].sort();
   add("structured_data_coverage", sdPages.length === pages.length ? "present" : sdPages.length ? "partial" : "missing", `${sdPages.length}/${pages.length} crawled pages have structured data${types.length ? ` (types: ${types.join(", ")})` : ""}${invalid.length ? `; ${invalid.length} with unparseable JSON-LD` : ""}`, sdPages.map((p) => p.url), { types });
 
-  // 6. Fact consistency: one phone number across the site?
-  const phones = [...new Set(pages.flatMap((p) => p.contact.phones))];
-  if (!phones.length) add("fact_consistency", "unknown", "no phone numbers found to compare");
-  else add("fact_consistency", phones.length === 1 ? "present" : "partial", phones.length === 1 ? "one phone number used consistently across crawled pages" : `${phones.length} different phone numbers across crawled pages: ${phones.join(", ")}`, phonePages.map((p) => p.url), { values: phones });
+  // 6. Fact consistency: do pages show the same business phone number?
+  //    Validated, normalized numbers with page provenance; a discrepancy only
+  //    on trusted evidence (functions/phoneEvidence.js, issue #36).
+  const pc = comparePhones(pages);
+  const { status: pcStatus, observation: pcObservation, evidencePages: pcPages, ...pcExtra } = pc;
+  add("fact_consistency", pcStatus, pcObservation, pcPages, pcExtra);
 
   // 7. Audience / positioning: website-verified facet values from M3.1.
   const verified = confirmed.flatMap((s) => [...((s.facets && s.facets.audiences) || []), ...((s.facets && s.facets.positioning) || [])].filter((v) => v.provenance === "website" || v.provenance === "owner").map((v) => ({ value: v.value, provenance: v.provenance, pages: v.foundOn || (v.sourceUrl ? [v.sourceUrl] : []) })));
