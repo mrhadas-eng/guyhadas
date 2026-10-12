@@ -1,6 +1,6 @@
 # M6 — Decision Engine — Implementation Notes
 
-**Status:** IMPLEMENTED + TESTED on `feature/m6-decision-engine`. Not deployed. Live Hagar validation pending.
+**Status:** DONE — merged (`7378618`), deployed and live-validated on Hagar (October 2026). Live validation found an M4 phone-evidence defect (#36), fixed in the evidence layer (`d5d1f94`) without changing M6 semantics. *(Status line updated during the M7 design; the notes below describe the implementation as merged.)*
 **Design:** `docs/M6_DECISION_ENGINE_DESIGN.md` (approved, revision 2). Where this file and the design differ, this file lists the difference under §6 *Deviations and interpretations*.
 **Provider calls:** none. M6 reads and writes Firestore only (no Semrush, Search Console API, SERP, LLM or URL Inspection).
 
