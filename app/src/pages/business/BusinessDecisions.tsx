@@ -3,10 +3,13 @@ import { useOutletContext } from "react-router-dom";
 import { EmptyState } from "../../components/EmptyState";
 import { Disclosure } from "../../components/ui/Disclosure";
 import { StatusPill, type StatusTone } from "../../components/ui/StatusPill";
-import { listenDecisions, listenLatestDecisionRun, listenSearchIntents, updateDecisionReview } from "../../lib/firestore";
+import { listenChangeEvents, listenDecisions, listenImpactPredictions, listenLatestDecisionRun, listenSearchIntents, updateDecisionReview } from "../../lib/firestore";
 import { runDecisionEngine } from "../../lib/functions";
 import { when } from "../../lib/plainLanguage";
-import type { Decision, DecisionOwnerStatus, DecisionRun, SearchIntent } from "../../types";
+import type { Decision, DecisionOwnerStatus, DecisionRun, ImpactPrediction, SearchIntent, SeoChangeEvent } from "../../types";
+import { PredictionPanel } from "./tracking/PredictionPanel";
+import { RecordImplementationModal } from "./tracking/RecordImplementationModal";
+import { IMPL_STATUS, OVERLAP, day, tr as trM7 } from "./tracking/m7Labels";
 import type { BusinessContext } from "./BusinessWorkspace";
 
 // M6 - minimal inspection UI for Decision Engine output (functional, not
@@ -104,7 +107,16 @@ const REASONS: Record<string, string> = {
   NO_ACTION_NEEDED: "אין צורך בפעולה כרגע",
   INSUFFICIENT_EVIDENCE: "אין מספיק ראיות",
   BUSINESS_FACTS_CONFLICTING: "נמצאו באתר פרטי עסק סותרים",
-  BUSINESS_FACTS_MISSING: "פרטי עסק חסרים באתר"
+  BUSINESS_FACTS_MISSING: "פרטי עסק חסרים באתר",
+  // M7 churn hold (docs/M7_DESIGN.md §9)
+  IMPLEMENTED_UNDER_OBSERVATION: "ההמלצה בוצעה ונמצאת במעקב — לא ממליצים על שינוי נוסף בינתיים",
+  RECENT_CHANGE_UNDER_OBSERVATION: "שינוי קודם בדף או בכוונה נמצא במעקב — ההמלצה מוחזקת",
+  RECENT_CHANGE_ON_PAGE: "לידיעה: בדף בוצע לאחרונה שינוי קטן שנמצא במעקב",
+  RELATED_EXPERIMENT_ACTIVE: "לידיעה: שינוי קשור נמצא במעקב (ישפיע על פרשנות המדידה)",
+  CHURN_OVERRIDE_ELIGIBILITY_REGRESSION: "מותר למרות המעקב: הדף נחסם אחרי השינוי",
+  CHURN_OVERRIDE_CHANGE_NOT_IN_EFFECT: "מותר: השינוי שבמעקב בוטל או לא נמצא באתר",
+  CHURN_OVERRIDE_OWNER_RELEASE: "מותר: שחררת את ההחזקה",
+  CHURN_OVERRIDE_NEW_OPPORTUNITY: "מותר: הזדמנות חדשה שזוהתה אחרי השינוי, בנושא אחר"
 };
 const BLOCKING: Record<string, string> = {
   HUMAN_REVIEW_REQUIRED: "דורש בדיקה שלך",
@@ -114,15 +126,42 @@ const BLOCKING: Record<string, string> = {
   NEEDS_INTENT_CLASSIFICATION: "צריך לסווג את סוג החיפוש",
   NEEDS_ENTITY_CONFIRMATION: "צריך לשייך לשירות",
   NEEDS_OWNER_GEOGRAPHY_CONFIRMATION: "צריך לאשר את האזור כאזור שירות",
-  WAIT_FOR_NEXT_ANALYSIS: "להמתין לניתוח הבא"
+  WAIT_FOR_NEXT_ANALYSIS: "להמתין לניתוח הבא",
+  WAIT_FOR_OBSERVATION_WINDOW: "להמתין לסוף חלון המעקב של שינוי קודם"
 };
 const BASIS: Record<string, string> = { observed: "נמדד", inference: "הסקה", inferred: "הסקה", assumption: "הנחה", hypothesis: "השערה", recommendation: "המלצה", unknown: "לא ידוע" };
 const tr = (map: Record<string, string>, k: string | null | undefined) => (k ? map[k] || k : "—");
 
-function Detail({ d, intent }: { d: Decision; intent?: SearchIntent }) {
+// P1: recordable only when accepted and actionable (a MONITOR that is the
+// decision's own observation keeps its held actionable value).
+function recordable(d: Decision): boolean {
+  if (d.ownerStatus !== "accepted" || d.engineState !== "active") return false;
+  const held = d.churnHold && d.reasonCodes.includes("IMPLEMENTED_UNDER_OBSERVATION") ? d.churnHold.heldDecision : null;
+  return ["IMPROVE", "CREATE", "CONSOLIDATE"].includes(held || d.decision);
+}
+
+function Detail({ d, intent, prediction, events, onRecord }: { d: Decision; intent?: SearchIntent; prediction?: ImpactPrediction; events: SeoChangeEvent[]; onRecord: () => void }) {
   return (
     <div className="row-detail">
       <p style={{ margin: "0 0 var(--space-3)" }}>{d.summary}</p>
+      {d.churnHold && (
+        <div className="notice-ok">
+          {d.decision === "MONITOR"
+            ? `ההמלצה (${tr(Object.fromEntries(Object.entries(DECISION_LABELS).map(([k, v]) => [k, v.text])), d.churnHold.heldDecision)}) בוצעה ונמצאת במעקב עד ${day(d.churnHold.holdUntilMs)}.`
+            : `מוחזק: שינוי קודם (${trM7(OVERLAP, d.churnHold.overlap)}) נמצא במעקב עד ${day(d.churnHold.holdUntilMs)}. ההמלצה המקורית — ${tr(Object.fromEntries(Object.entries(DECISION_LABELS).map(([k, v]) => [k, v.text])), d.churnHold.heldDecision)}${d.churnHold.heldActionDetail ? `: ${tr(ACTION, d.churnHold.heldActionDetail)}` : ""} — נשמרה ותחזור בסוף ההחזקה. אפשר לשחרר את ההחזקה בלשונית ״מעקב שינויים״.`}
+        </div>
+      )}
+      {events.length > 0 && (
+        <p className="text-muted">ביצועים שנרשמו: {events.map((e) => `${e.publicationDate || e.implementationDate} (${trM7(IMPL_STATUS, e.implementationStatus)})`).join(" · ")}</p>
+      )}
+      {recordable(d) && (
+        <p>
+          <button type="button" className="btn btn-outline" onClick={onRecord}>רישום ביצוע</button>{" "}
+          <span className="text-dim">אחרי שהשינוי בוצע בפועל באתר. אישור ההמלצה לבדו אינו ביצוע.</span>
+        </p>
+      )}
+      {prediction && <PredictionPanel p={prediction} />}
+      {!prediction && recordable(d) && <p className="text-dim">אין עדיין תחזית — לוחצים ״עדכון מעקב״ בלשונית ״מעקב שינויים״ כדי לחשב תחזית זמנית.</p>}
       {d.decision === "CREATE" && <div className="notice-ok">המלצה בלבד: המערכת לא יוצרת דף, כתובת או תוכן. זה מקום שמור לכוונת החיפוש — התכנון והכתיבה הם החלטה שלך.</div>}
       {d.decision === "CONSOLIDATE" && <div className="notice-ok">זו המלצה שלנו על סמך הראיות הזמינות (Search Console וסריקת האתר), לא החלטה של Google לגבי הכתובת הקנונית. Google מתייחס להעדפות כתובת ראשית כרמז ומחליט בעצמו.</div>}
       <div className="detail-grid" style={{ marginTop: "var(--space-3)" }}>
@@ -227,7 +266,7 @@ function Detail({ d, intent }: { d: Decision; intent?: SearchIntent }) {
             </ul>
           </>
         )}
-        {d.dependencies.length > 0 && <p className="text-muted">תלוי ב: {d.dependencies.map((x) => `${x.decisionId} (${x.relation === "same_cluster" ? "אותו אשכול" : x.relation === "subsumed_by" ? "נכלל ב" : x.relation})`).join(" · ")}</p>}
+        {d.dependencies.length > 0 && <p className="text-muted">תלוי ב: {d.dependencies.map((x) => `${x.decisionId || (x as { experimentId?: string }).experimentId} (${x.relation === "same_cluster" ? "אותו אשכול" : x.relation === "subsumed_by" ? "נכלל ב" : x.relation === "under_observation" ? "במעקב" : x.relation === "held_by_observation" ? "מוחזק בגלל מעקב" : x.relation})`).join(" · ")}</p>}
         {d.cluster && <p className="text-muted">אשכול: {d.cluster.clusterId}{d.cluster.parentPageUrl ? ` · דף השירות של האשכול: ${d.cluster.parentPageUrl}` : ""}</p>}
       </section>
 
@@ -272,11 +311,16 @@ export default function BusinessDecisions() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [predictions, setPredictions] = useState<ImpactPrediction[]>([]);
+  const [events, setEvents] = useState<SeoChangeEvent[]>([]);
+  const [recordFor, setRecordFor] = useState<Decision | null>(null);
 
   useEffect(() => {
     if (!business) return;
     const a = listenDecisions(business.id, setDecisions);
     const b = listenSearchIntents(business.id, setIntents);
+    const p = listenImpactPredictions(business.id, setPredictions);
+    const e = listenChangeEvents(business.id, setEvents);
     const c = listenLatestDecisionRun(business.id, (r, a) => {
       setRun(r);
       setAttempt(a);
@@ -285,6 +329,8 @@ export default function BusinessDecisions() {
       a();
       b();
       c();
+      p();
+      e();
     };
   }, [business]);
 
@@ -308,6 +354,13 @@ export default function BusinessDecisions() {
   }
 
   const intentsById = new Map(intents.map((i) => [i.intentId, i]));
+  const predById = new Map(predictions.map((p) => [p.id, p]));
+  // committed prediction of the latest live implementation, else the active provisional one
+  const predictionFor = (d: Decision): ImpactPrediction | undefined => {
+    const live = events.filter((e) => e.decisionId === d.id && e.implementationStatus !== "reverted");
+    const committed = live.map((e) => predById.get(e.predictionId)).find(Boolean);
+    return committed || predictions.find((p) => p.kind === "provisional" && p.status === "provisional" && p.decisionId === d.id);
+  };
   const active = (decisions || []).filter((d) => d.engineState === "active");
   const superseded = (decisions || []).filter((d) => d.engineState === "superseded");
 
@@ -341,7 +394,7 @@ export default function BusinessDecisions() {
         </tr>
         {open && (
           <tr className="detail-row">
-            <td colSpan={6}><Detail d={d} intent={d.intentId ? intentsById.get(d.intentId) : undefined} /></td>
+            <td colSpan={6}><Detail d={d} intent={d.intentId ? intentsById.get(d.intentId) : undefined} prediction={predictionFor(d)} events={events.filter((e) => e.decisionId === d.id)} onRecord={() => setRecordFor(d)} /></td>
           </tr>
         )}
       </Fragment>
@@ -395,6 +448,7 @@ export default function BusinessDecisions() {
       })}
 
       {superseded.length > 0 && <Disclosure label={`החלטות שהוחלפו (${superseded.length})`}>{table(superseded)}</Disclosure>}
+      {recordFor && <RecordImplementationModal businessId={business.id} d={recordFor} onClose={() => setRecordFor(null)} />}
     </section>
   );
 }

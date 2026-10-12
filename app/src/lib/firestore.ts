@@ -38,7 +38,11 @@ import type {
   Decision,
   DecisionOwnerStatus,
   DecisionRun,
-  SearchIntent
+  SearchIntent,
+  ImpactPrediction,
+  SeoChangeEvent,
+  SeoExperiment,
+  TrackingRun
 } from "../types";
 
 // How much history the Traffic/Search trend charts load. Milestone 3's
@@ -494,4 +498,32 @@ export function listenLatestDecisionRun(businessId: string, cb: (run: DecisionRu
 
 export async function updateDecisionReview(id: string, data: { ownerStatus?: DecisionOwnerStatus; ownerNote?: string }) {
   return updateDoc(doc(db, "decisions", id), { ...data, updatedAt: serverTimestamp() });
+}
+
+// --- M7 Prediction, Change & Experiment Tracking (engine-generated; the
+// owner may only edit implementation notes and release a hold) ---
+export function listenImpactPredictions(businessId: string, cb: (items: ImpactPrediction[]) => void): Unsubscribe {
+  return byBusiness<ImpactPrediction>("impactPredictions", businessId, (rows) => cb(rows.sort((a, b) => (b.createdAtMs || 0) - (a.createdAtMs || 0) || a.id.localeCompare(b.id))));
+}
+
+export function listenChangeEvents(businessId: string, cb: (items: SeoChangeEvent[]) => void): Unsubscribe {
+  return byBusiness<SeoChangeEvent>("seoChangeEvents", businessId, (rows) => cb(rows.sort((a, b) => b.startMs - a.startMs || a.id.localeCompare(b.id))));
+}
+
+export function listenExperiments(businessId: string, cb: (items: SeoExperiment[]) => void): Unsubscribe {
+  return byBusiness<SeoExperiment>("seoExperiments", businessId, (rows) => cb(rows.sort((a, b) => b.startMs - a.startMs || a.id.localeCompare(b.id))));
+}
+
+export function listenLatestTrackingRun(businessId: string, cb: (run: TrackingRun | null) => void): Unsubscribe {
+  return byBusiness<TrackingRun>("trackingRuns", businessId, (rows) => cb(rows.filter((r) => r.status === "completed").sort((a, b) => (b.completedAtMs || 0) - (a.completedAtMs || 0))[0] || null));
+}
+
+export async function updateChangeEventNotes(id: string, implementationNotes: string) {
+  return updateDoc(doc(db, "seoChangeEvents", id), { implementationNotes, updatedAt: serverTimestamp() });
+}
+
+// P2: an explicit release lasts for the experiment's lifetime (rules allow
+// only released = true with a note).
+export async function releaseExperimentHold(id: string, note: string) {
+  return updateDoc(doc(db, "seoExperiments", id), { ownerHoldRelease: { released: true, note, atMs: Date.now() }, updatedAt: serverTimestamp() });
 }

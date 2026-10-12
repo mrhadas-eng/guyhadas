@@ -12,7 +12,8 @@
 // the analysis cache identity and is stored on every decision.
 
 const DECISION_ENGINE_VERSION = 1;
-const DECISION_CONFIG_VERSION = 1;
+// v2: M7 churn-hold filter (docs/M7_DESIGN.md §9.5 I-4).
+const DECISION_CONFIG_VERSION = 2;
 
 const HEURISTICS = Object.freeze({
   // §D.4 intent grouping (G4): equivalent topics merge when, among other

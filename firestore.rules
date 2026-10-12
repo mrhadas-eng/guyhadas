@@ -130,6 +130,66 @@ service cloud.firestore {
         && request.resource.data.get("ownerStatus", "pending") in ["pending", "accepted", "rejected", "deferred"];
     }
 
+    // --- M7 Prediction, Change & Experiment Tracking (docs/M7_DESIGN.md §12) ---
+    // Predictions are engine-generated (content create-only, lifecycle fields
+    // server-side). No client can create or alter confidence, ranges,
+    // model/config versions, implementation status, verification, time
+    // state, holds, attribution or outcome.
+    match /impactPredictions/{predictionId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    // Change events are created only by visibilityRecordImplementation (the
+    // validated, owner_reported implementation facts). The owner may later
+    // edit only the free-text implementation notes.
+    match /seoChangeEvents/{changeEventId} {
+      allow read: if isAdmin();
+      allow create, delete: if false;
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["implementationNotes", "updatedAt"])
+        && request.resource.data.implementationNotes is string
+        && request.resource.data.implementationNotes.size() <= 2000;
+    }
+
+    // Experiments are engine-generated. The owner's only control is an
+    // explicit hold release with a note (P2: durable for the experiment's
+    // lifetime - it cannot be withdrawn from the client). M8 outcome fields
+    // stay null until M8 writes them server-side.
+    match /seoExperiments/{experimentId} {
+      allow read: if isAdmin();
+      allow create, delete: if false;
+      allow update: if isAdmin()
+        && resource.data.status == "open"
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["ownerHoldRelease", "updatedAt"])
+        && request.resource.data.ownerHoldRelease is map
+        && request.resource.data.ownerHoldRelease.keys().hasOnly(["released", "note", "atMs"])
+        && request.resource.data.ownerHoldRelease.released == true
+        && request.resource.data.ownerHoldRelease.note is string
+        && request.resource.data.ownerHoldRelease.note.size() > 0
+        && request.resource.data.ownerHoldRelease.note.size() <= 500;
+    }
+
+    match /trackingRuns/{runId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /trackingRunLocks/{businessId} {
+      allow read, write: if false;
+    }
+
+    // Reserved for M8 measurement - never created by M7, never client-written.
+    match /impactObservations/{observationId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
+    match /experimentOutcomes/{outcomeId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     // Integration status docs (ga4/search_console/semrush/...). Read-only
     // for clients as of Milestone 2: writes now happen exclusively through
     // the visibilityConnectIntegration / visibilitySyncGa4 /
@@ -252,7 +312,8 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // metrics / aiVisibilitySnapshots / contentAssets / experiments /
+    // metrics / aiVisibilitySnapshots / contentAssets / experiments (legacy
+    // name - M7 uses seoExperiments) /
     // recommendations are not yet read or written by any client - left to
     // the blanket default-deny above until a later milestone actually
     // introduces them, same as everywhere else in this file.

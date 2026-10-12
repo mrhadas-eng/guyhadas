@@ -1987,6 +1987,20 @@ Persistent SearchIntents, ownership, cannibalization and one explainable decisio
 
 Not implemented (M7+): ImpactPrediction, implementation capture, change events, experiments, observation windows, churn prevention (M7); measurement (M8); learning (M9).
 
+### M7 — Prediction, Change & Experiment Tracking
+
+**Status: IMPLEMENTED and TESTED on `feature/m7-tracking` (PR #47, owner review). Not merged; live Hagar validation pending owner deploy.** Design: `docs/M7_DESIGN.md` (owner decisions P1–P3); implementation, deviations and the validation checklist: `docs/M7_IMPLEMENTATION_NOTES.md`.
+
+What it covers:
+- **Provider-free ImpactPrediction.** Versioned heuristic priors × modifiers give three separate whole-day ranges (first signal / SEO signal / business impact). Magnitudes are ordinal, confidence is capped at medium, and unknowns are explicit. A prediction is provisional only for owner-accepted IMPROVE/CREATE/CONSOLIDATE decisions on an explicit tracking run, and is committed at implementation from pre-change evidence only.
+- **Owner-recorded implementations.** Each becomes an idempotent `seoChangeEvent` (acceptance is never implementation), with crawl verification of the change itself.
+- **P3 before-snapshots.** Strictly pre-change: an existing baseline, else one captured from stored pre-change state, else `missing` / `contaminated`. Never a crawl.
+- **Experiments.** Deterministic `seoExperiments` (grouping, late join, bounded extension, saturation) with M7-only time states.
+- **Churn holds.** Applied inside M6 as MONITOR (the implemented decision) or WAIT (overlapping), with preserved recommendations, four deterministic overrides, and an owner release that lasts for the experiment.
+- **Baselines.** They now always include the pages and topics referenced by accepted decisions and open experiments (#39).
+
+Not implemented (M8+): measurement, after-snapshots, signal states, attribution (M8); calibration and learning (M9).
+
 ---
 
 # 41. Future Milestones
@@ -2022,9 +2036,9 @@ Not implemented (M7+): ImpactPrediction, implementation capture, change events, 
 - CREATE / IMPROVE / CONSOLIDATE / WAIT / MONITOR / REJECT
 - explainability
 
-### M7 — Prediction, Change & Experiment Tracking **(CURRENT MILESTONE — design phase)**
+### M7 — Prediction, Change & Experiment Tracking **(CURRENT MILESTONE — implemented, in review)**
 
-**Status: DESIGN — `docs/M7_DESIGN.md` (+ `docs/M7_IMPLEMENTATION_BRIEF.md`); no implementation yet.**
+**Status: IMPLEMENTED and TESTED (`feature/m7-tracking`, PR #47); live Hagar validation pending owner merge + deploy.** Design `docs/M7_DESIGN.md`; brief `docs/M7_IMPLEMENTATION_BRIEF.md`; implementation notes `docs/M7_IMPLEMENTATION_NOTES.md`.
 
 - ImpactPrediction (deterministic, versioned heuristics; ranges for three separate stages; ordinal magnitudes; confidence with reasons; unknowns explicit) — clarification: §38 and the M6 design already place prediction in M7
 - implementation capture (owner-recorded; acceptance is never implementation)
