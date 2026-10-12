@@ -179,6 +179,14 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Semrush API unit balance snapshots (append-only, written only by
+    // visibilityGetSemrushBalance via the Admin SDK). Contain only
+    // {balance, checkedAt, source} - never the API key.
+    match /semrushBalanceSnapshots/{snapshotId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     // Reserved for M8 measurement - never created by M7, never client-written.
     match /impactObservations/{observationId} {
       allow read: if isAdmin();

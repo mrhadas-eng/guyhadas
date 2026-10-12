@@ -16,6 +16,8 @@ Object.assign(exports, require("./searchIntelligence"));
 Object.assign(exports, require("./opportunityEngine"));
 Object.assign(exports, require("./decisionEngine"));
 Object.assign(exports, require("./trackingEngine"));
+// Semrush free balance check (V4-era, read-only; independent of the V3 adapter).
+exports.visibilityGetSemrushBalance = require("./semrushBalance").visibilityGetSemrushBalance;
 
 const GUY_CALENDAR_EMAIL = "mr.hadas@gmail.com";
 
