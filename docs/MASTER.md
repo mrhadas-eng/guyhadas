@@ -1240,7 +1240,7 @@ A cache hit must have providerCalled=false and cost=$0.
 
 ### 34.1 Semrush API access and version strategy
 
-Semrush currently exposes both Version 3 and Version 4 APIs, with version-specific API keys and different supported endpoint coverage. Current Semrush documentation recommends Version 4 for new Keyword Reports integrations; existing Version 3 Keyword Reports integrations remain temporarily supported while migration continues. Version 4 Keyword Reports are currently in Early Access and can change before General Availability. cite-source-needed
+Semrush currently exposes both Version 3 and Version 4 APIs, with version-specific API keys and different supported endpoint coverage. Current Semrush documentation recommends Version 4 for new Keyword Reports integrations; existing Version 3 Keyword Reports integrations remain temporarily supported while migration continues. Version 4 Keyword Reports are currently in Early Access and can change before General Availability. (Sources, verified 2026-10-12: Semrush, *Keyword reports* v4 — "Last updated: September 1, 2026"; *API versions* — "Last updated: September 1, 2026", "API keys are version-specific".)
 
 For this product, **do not upgrade the Semrush subscription solely to obtain or preserve Version 3 access**.
 
@@ -1254,7 +1254,7 @@ The operating rule is:
 - Cache/reuse aggressively; do not spend units on page render, duplicate research or unnecessary re-runs.
 - Keep provider-specific version details inside the adapter layer, never in the core intelligence model.
 
-Semrush's current documentation states that Standard API access is an add-on to the Business tier and that purchased API units are included in the recurring subscription and renew on the subscription renewal date; unused units expire rather than rolling forward. The exact account entitlement must always be verified from the live Semrush account rather than assumed from the plan name. cite-source-needed
+Semrush's current documentation states that Standard API access is an add-on to the Business tier and that purchased API units are included in the recurring subscription and renew on the subscription renewal date; unused units expire rather than rolling forward. The exact account entitlement must always be verified from the live Semrush account rather than assumed from the plan name. (Source, verified 2026-10-12: Semrush KB *Standard API* — units "renew on the same day as your plan" and "Unused units will expire".)
 
 Sources:
 https://developer.semrush.com/api/v4/seo/keyword-reports/
@@ -1277,6 +1277,14 @@ STORE RESULT + LEDGER
 ```
 
 If cache lookup, quota lookup or governance infrastructure fails, the system must stop rather than spend blindly.
+
+### 34.1.1 Current account state and balance tracking (2026-10-12)
+
+- **Version 4 is the API currently available to this account.** A V4 key is stored as the `SEMRUSH_API_KEY` secret (version 2). Because keys are version-specific, it cannot call the Version 3 reports the existing discovery adapter (`functions/semrush.js`: `phrase_related`, `domain_organic`, `domain_organic_organic`) uses. Those functions (`visibilityDiscoverFromSemrush`, `visibilityDiscoverDomainFromSemrush`) must **not** be redeployed until the adapter is migrated, so they never receive the V4 key.
+- **Balance check.** `visibilityGetSemrushBalance` (admin-only, POST) makes only Semrush's documented **free** balance request, `GET https://www.semrush.com/users/countapiunits.html?key=…` (Semrush *API unit balance*: "free API requests"; "Last updated: August 5, 2026"). It is independent of the V3 adapter, is bound to `SEMRUSH_API_KEY` on that function only, and never returns, logs or stores the key.
+- **Balance snapshots.** Each successful check appends one document to `semrushBalanceSnapshots`, with `{balance, checkedAt, source: "semrush_free_balance_check"}`. Documents are never overwritten. A snapshot is the authoritative balance at that moment. The opening balance after a renewal, later balances and deltas are derived by ordering snapshots by `checkedAt`.
+- **Paid usage** remains tracked in `apiUsage` through the governor. The **Semrush API Query Log** (query, time, database, report type, requested rows, report cost, remaining units) is the external source for reconciling our ledger.
+- **No monthly allowance is inferred yet.** Semrush units renew on the plan's renewal day, not on a calendar month. The governor's current "month" is a rolling 30 days that counts requests, not units. A unit budget tied to the billing cycle is future work, to be based on observed snapshots.
 
 ### Current production-readiness note
 
