@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import SemrushBalanceCheck from "./SemrushBalanceCheck";
 import { useOutletContext } from "react-router-dom";
 import { StatusBadge } from "../../components/StatusBadge";
 import { ConnectIntegrationModal } from "../../components/ConnectIntegrationModal";
@@ -144,6 +145,8 @@ export default function BusinessIntegrations() {
       <p className="text-dim" style={{ fontSize: "0.8rem", marginTop: 12 }}>
         Semrush ממתין להקצאת יחידות API בחשבון הקיים. OpenAI / Anthropic / xAI / n8n יתווספו בהמשך.
       </p>
+
+      <SemrushBalanceCheck />
 
       {connectModalProvider && (
         <ConnectIntegrationModal

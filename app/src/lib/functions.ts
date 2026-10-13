@@ -1,4 +1,5 @@
 import { auth } from "../firebase";
+import { requestSemrushBalance, type SemrushBalanceResult } from "./semrushBalance";
 import type { Ga4SnapshotData, SearchConsoleSnapshotData, CrawlReport, CostControlDecision, SeedBuildResult, SeedRef } from "../types";
 
 // Thin wrapper around the Visibility OS Cloud Functions (functions/visibility.js,
@@ -306,4 +307,13 @@ export function recordImplementation(businessId: string, input: RecordImplementa
 
 export function revertImplementation(businessId: string, changeEventId: string, revertNote: string): Promise<RecordImplementationResult> {
   return callFunction<RecordImplementationResult>("visibilityRecordImplementation", { businessId, action: "revert", changeEventId, revertNote });
+}
+
+// --- Semrush free API unit balance (functions/semrushBalance.js) ---
+// Admin-only, explicit button only. The deployed function makes only
+// Semrush's FREE balance request (0 API units); the key stays server-side.
+export type { SemrushBalanceResult };
+
+export function getSemrushBalance(): Promise<SemrushBalanceResult> {
+  return requestSemrushBalance(() => auth.currentUser, (url, init) => fetch(url, init), `${FUNCTIONS_BASE}/visibilityGetSemrushBalance`);
 }
