@@ -48,14 +48,39 @@ function redact(text, key) {
 }
 
 // Semrush answers with a plain number ("1000" or "1,000"); errors come back
-// as "ERROR <code> :: <message>" (often with HTTP 200).
+// as "ERROR <code> :: <message>" (often with HTTP 200). A UTF-8 BOM is
+// tolerated.
 function parseBalance(body) {
-  const text = String(body == null ? "" : body).trim();
+  const text = String(body == null ? "" : body).replace(/^\uFEFF/, "").trim();
   if (/^ERROR\b/i.test(text)) return { ok: false, kind: "semrush_error", detail: text };
   if (!/^\d{1,3}(,\d{3})*$|^\d+$/.test(text)) return { ok: false, kind: "malformed" };
   const n = Number(text.replace(/,/g, ""));
   if (!Number.isSafeInteger(n) || n < 0) return { ok: false, kind: "malformed" };
   return { ok: true, balance: n };
+}
+
+// Safe, one-line description of a response for the logs (diagnostics for a
+// non-numeric answer). Records only: HTTP status, content-type, whether a
+// redirect happened, the FINAL URL's origin + path (never the query string,
+// which carries the key), body length, a coarse format guess, and the first
+// 120 characters of the body with the key and any URL query strings
+// redacted and whitespace collapsed.
+function describeResponse(res, body, key) {
+  let finalPath = null;
+  try {
+    if (res && res.url) {
+      const u = new URL(res.url);
+      finalPath = `${u.origin}${u.pathname}`;
+    }
+  } catch (err) {
+    finalPath = "unparseable";
+  }
+  const headers = res && res.headers;
+  const contentType = headers && typeof headers.get === "function" ? headers.get("content-type") : null;
+  const t = String(body || "").replace(/^\uFEFF/, "").trim();
+  const format = !t ? "empty" : t.startsWith("<") ? "html_or_xml" : t.startsWith("{") || t.startsWith("[") ? "json" : /[;,]/.test(t) && /\n/.test(t) ? "csv_like" : "text";
+  const snippet = redact(t.replace(/\s+/g, " ").slice(0, 120), key).slice(0, 120);
+  return `status=${res ? res.status : "?"} contentType=${contentType || "none"} redirected=${!!(res && res.redirected)} finalUrl=${finalPath || "unknown"} length=${String(body || "").length} format=${format} bodyStart="${snippet}"`;
 }
 
 // deps: { env, fetchImpl, nowMs, db, log } - injectable for tests.
@@ -67,12 +92,14 @@ async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.f
 
   let status = null;
   let body = "";
+  let response = null;
   const controller = typeof AbortController === "function" ? new AbortController() : null;
   const timer = controller ? setTimeout(() => controller.abort(), TIMEOUT_MS) : null;
   try {
     const url = new URL(BALANCE_URL);
     url.searchParams.set("key", key);
     const res = await fetchImpl(url.toString(), { method: "GET", signal: controller ? controller.signal : undefined });
+    response = res;
     status = res.status;
     body = await res.text();
   } catch (err) {
@@ -88,11 +115,11 @@ async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.f
       log.error(`Semrush balance check: Semrush returned an error (HTTP ${status}):`, redact(parsed.detail, key));
       return fail(`Semrush rejected the balance request: ${redact(parsed.detail.replace(/^ERROR\s*\d*\s*::\s*/i, ""), key)}`);
     }
-    log.error(`Semrush balance check: unexpected response (HTTP ${status}, ${body.length} chars)`);
+    log.error(`Semrush balance check: unexpected response: ${describeResponse(response, body, key)}`);
     return fail("Semrush returned an unexpected response to the balance request.");
   }
   if (status != null && (status < 200 || status >= 300)) {
-    log.error(`Semrush balance check: HTTP ${status}`);
+    log.error(`Semrush balance check: HTTP error: ${describeResponse(response, body, key)}`);
     return fail(`Semrush returned HTTP ${status} for the balance request.`);
   }
 
@@ -108,4 +135,4 @@ async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.f
   return { ok: true, currentBalance: parsed.balance, checkedAt };
 }
 
-module.exports = { checkSemrushBalance, parseBalance, redact, configuredKey, BALANCE_URL, SOURCE };
+module.exports = { checkSemrushBalance, parseBalance, redact, describeResponse, configuredKey, BALANCE_URL, SOURCE };

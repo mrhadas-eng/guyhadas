@@ -105,6 +105,56 @@ const noKey = (s, x) => assert.ok(!JSON.stringify(x).includes(KEY), "API key lea
     assert.strictEqual(s.snaps().length, 0);
   });
 
+  // --- diagnostics for non-numeric responses (production showed "unexpected response") ---
+  const richFetch = (status, body, { contentType = null, url = null, redirected = false } = {}) => async (reqUrl) => ({
+    status,
+    url: url || reqUrl,
+    redirected,
+    headers: { get: (h) => (h.toLowerCase() === "content-type" ? contentType : null) },
+    text: async () => body
+  });
+
+  await test("diagnostics: HTML login/redirect page -> logged safely (status, type, final path, length, snippet), no key, no query", async () => {
+    const s = setup();
+    const html = `<!DOCTYPE html><html><head><title>Log in to Semrush</title></head><body><a href="https://www.semrush.com/login/?redirect_to=/users/countapiunits.html?key=${KEY}">x</a> ${KEY}</body></html>`;
+    const r = await s.check(richFetch(200, html, { contentType: "text/html; charset=utf-8", url: `https://www.semrush.com/login/?src=x&key=${KEY}`, redirected: true }));
+    assert.deepStrictEqual(Object.keys(r).sort(), ["checkedAt", "error", "ok"], "returned contract unchanged");
+    assert.ok(/unexpected response/.test(r.error));
+    const line = s.logs.join("\n");
+    assert.ok(/status=200/.test(line));
+    assert.ok(/contentType=text\/html; charset=utf-8/.test(line));
+    assert.ok(/redirected=true/.test(line));
+    assert.ok(/finalUrl=https:\/\/www\.semrush\.com\/login\//.test(line), "final origin + path only");
+    assert.ok(/format=html_or_xml/.test(line));
+    assert.ok(new RegExp(`length=${html.length}`).test(line));
+    assert.ok(!line.includes(KEY), "key never logged");
+    assert.ok(!/\?src=|key=/.test(line), "no query string logged");
+    const snippet = line.match(/bodyStart="([^"]*)"/)[1];
+    assert.ok(snippet.length <= 120);
+    noKey(s, r);
+    assert.strictEqual(s.snaps().length, 0);
+  });
+
+  await test("diagnostics: JSON body and HTTP 403 are described; no snapshot", async () => {
+    const s = setup();
+    await s.check(richFetch(200, '{"error":"invalid key"}', { contentType: "application/json" }));
+    assert.ok(/format=json/.test(s.logs.join(" ")));
+    assert.ok(/contentType=application\/json/.test(s.logs.join(" ")));
+    const t = setup();
+    const r = await t.check(richFetch(403, "1000", { contentType: "text/plain" }));
+    assert.strictEqual(r.ok, false);
+    assert.ok(/HTTP error: status=403/.test(t.logs.join(" ")));
+    assert.ok(!t.logs.join(" ").includes(KEY));
+    assert.strictEqual(s.snaps().length + t.snaps().length, 0);
+  });
+
+  await test("parser: BOM-prefixed and CRLF numeric answers are accepted", async () => {
+    const s = setup();
+    assert.strictEqual(s.mod.parseBalance("\uFEFF1,500,000\r\n").balance, 1500000);
+    assert.strictEqual(s.mod.parseBalance(" 42 ").balance, 42);
+    assert.strictEqual(s.mod.parseBalance("<html>").ok, false);
+  });
+
   await test("missing / placeholder secret -> no request at all", async () => {
     for (const env of [{}, { SEMRUSH_API_KEY: "" }, { SEMRUSH_API_KEY: "placeholder-not-configured-yet-xxxx" }, { SEMRUSH_API_KEY: "short" }]) {
       const s = setup();
