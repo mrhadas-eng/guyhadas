@@ -1997,7 +1997,7 @@ Not implemented (M7+): ImpactPrediction, implementation capture, change events, 
 
 ### M7 — Prediction, Change & Experiment Tracking
 
-**Status: IMPLEMENTED and TESTED on `feature/m7-tracking` (PR #47, owner review). Not merged; live Hagar validation pending owner deploy.** Design: `docs/M7_DESIGN.md` (owner decisions P1–P3); implementation, deviations and the validation checklist: `docs/M7_IMPLEMENTATION_NOTES.md`.
+**Status: IMPLEMENTED — merged (PR #47) and deployed. Final live acceptance is still pending one controlled implementation test on Hagar** (record one real implementation → committed prediction, linked before-snapshot, change event and experiment; see the checklist in `docs/M7_IMPLEMENTATION_NOTES.md`). Design: `docs/M7_DESIGN.md` (owner decisions P1–P3); implementation, deviations and the validation checklist: `docs/M7_IMPLEMENTATION_NOTES.md`.
 
 What it covers:
 - **Provider-free ImpactPrediction.** Versioned heuristic priors × modifiers give three separate whole-day ranges (first signal / SEO signal / business impact). Magnitudes are ordinal, confidence is capped at medium, and unknowns are explicit. A prediction is provisional only for owner-accepted IMPROVE/CREATE/CONSOLIDATE decisions on an explicit tracking run, and is committed at implementation from pre-change evidence only.
@@ -2044,9 +2044,9 @@ Not implemented (M8+): measurement, after-snapshots, signal states, attribution 
 - CREATE / IMPROVE / CONSOLIDATE / WAIT / MONITOR / REJECT
 - explainability
 
-### M7 — Prediction, Change & Experiment Tracking **(CURRENT MILESTONE — implemented, in review)**
+### M7 — Prediction, Change & Experiment Tracking
 
-**Status: IMPLEMENTED and TESTED (`feature/m7-tracking`, PR #47); live Hagar validation pending owner merge + deploy.** Design `docs/M7_DESIGN.md`; brief `docs/M7_IMPLEMENTATION_BRIEF.md`; implementation notes `docs/M7_IMPLEMENTATION_NOTES.md`.
+**Status: IMPLEMENTED — merged (PR #47) and deployed. Final live acceptance pending one controlled implementation test on Hagar.** Design `docs/M7_DESIGN.md`; brief `docs/M7_IMPLEMENTATION_BRIEF.md`; implementation notes `docs/M7_IMPLEMENTATION_NOTES.md`.
 
 - ImpactPrediction (deterministic, versioned heuristics; ranges for three separate stages; ordinal magnitudes; confidence with reasons; unknowns explicit) — clarification: §38 and the M6 design already place prediction in M7
 - implementation capture (owner-recorded; acceptance is never implementation)
@@ -2057,12 +2057,17 @@ Not implemented (M8+): measurement, after-snapshots, signal states, attribution 
 
 Boundary: M7 never measures outcomes, sets signal states (NO_SIGNAL_YET … FAILED), computes attribution, or calibrates — see §38.12.
 
-### M8 — Measurement
+### M8 — Measurement **(CURRENT MILESTONE — design in owner review)**
 
-- outcome measurement
-- pre/post comparison
-- control/comparison views
-- attribution confidence
+**Status: DESIGN ONLY (`docs/M8_DESIGN.md`, `docs/M8_IMPLEMENTATION_BRIEF.md`); not implemented.** Live M8 acceptance depends on M7's final live acceptance; M8 deploy depends on the runtime migration in #35.
+
+- after-measurement (immutable `impactObservations`, Search Console page × date, final data only) and after-snapshot (new immutable baseline, linked; the before-snapshot is never modified)
+- pre/post comparison against the site trend (experiment pages excluded) and year over year where available — analytic thresholds, no statistical claims
+- signal states (§38.7 taxonomy) and outcome classification in `experimentOutcomes/{experimentId}`
+- attribution confidence (low / medium / high, weakest-link, with reasons and unknowns) — separate from prediction confidence and never raised by improvement alone
+- structured prediction-vs-actual (timing, direction, ordinal magnitude) for M9 — no calibration
+
+Clarification: signal state, outcome and attribution live in `experimentOutcomes`; the reserved `seoExperiments.signalState / outcome / attributionConfidence` fields stay `null` (superseded — M7 rewrites experiment documents wholesale on every recompute). M8 never writes `seoExperiments`; its only write on an M7 document is `seoChangeEvents.afterSnapshot`.
 
 ### M9 — Learning
 
