@@ -216,6 +216,7 @@ async function recordUsage(record) {
     forceRefresh: false,
     providerCalled: false,
     cacheHit: false,
+    estimatedUnits: null,
     ...record,
     retrievedAt: admin.firestore.FieldValue.serverTimestamp(),
     retrievedAtMs: Date.now()
@@ -243,6 +244,9 @@ async function recordUsageSafely(record) {
 //     confirmed owner action - never a default. Never bypasses the circuit
 //     breaker or budget/quota checks.
 //   estimateCost: optional (input) => USD estimate checked before the call
+//   estimateUnits: optional (input) => provider-unit estimate. REQUIRED when
+//     apiLimits.<op>.maxEstimatedUnitsPerCall is set: a missing, invalid or
+//     too-high estimate blocks the call (blocked_by_budget) - fail closed.
 //   execute: async (input) => ({ result, usage }) - the provider call
 //
 // Always returns (only a provider execution error is rethrown, after it has
@@ -251,7 +255,7 @@ async function recordUsageSafely(record) {
 // decision: "cache_hit" | "cache_miss" | "forced_refresh" |
 //           "blocked_cache_unavailable" | "blocked_safety_check_unavailable" |
 //           "blocked_by_budget" | "blocked_by_quota" | "blocked_by_safety_limit"
-async function runGoverned({ provider, operation, businessId, input, model = null, analysisVersion = null, forceRefresh = false, reason = null, estimateCost, execute }) {
+async function runGoverned({ provider, operation, businessId, input, model = null, analysisVersion = null, forceRefresh = false, reason = null, estimateCost, estimateUnits, execute }) {
   if (!businessId) throw new Error("runGoverned requires a businessId - every provider call in this app is business-scoped");
   const limits = getLimits(provider, operation);
   const inputHash = hashInput(input);
@@ -279,6 +283,7 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
         cacheHit: true,
         providerCalled: false,
         actualCostUsd: 0,
+        providerUnitsUsed: 0,
         cachedFromUsageId: cached.id
       });
       return outcome({ ok: true, cacheHit: true, result: cached.result, decision: "cache_hit", cachedFromUsageId: cached.id });
@@ -288,6 +293,7 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
 
   // 2. Circuit breaker and budget/quota - fail closed if they can't run.
   let estimatedCostUsd = null;
+  let estimatedUnits = null;
   try {
     const circuit = await checkCircuitBreaker(provider, operation);
     if (!circuit.allowed) {
@@ -295,9 +301,18 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
       return outcome({ decision: circuit.reason, blocked: { reason: circuit.reason, message: circuit.message } });
     }
     estimatedCostUsd = estimateCost ? estimateCost(input) : null;
+    // Hard per-call unit cap (provider-unit priced operations, e.g. Semrush V4).
+    if (limits.maxEstimatedUnitsPerCall != null) {
+      estimatedUnits = estimateUnits ? estimateUnits(input) : null;
+      if (typeof estimatedUnits !== "number" || !Number.isFinite(estimatedUnits) || estimatedUnits <= 0 || estimatedUnits > limits.maxEstimatedUnitsPerCall) {
+        const message = `${provider}.${operation}: the unit estimate (${estimatedUnits}) could not be confirmed within the ${limits.maxEstimatedUnitsPerCall}-unit per-call cap. The provider was NOT called.`;
+        await recordUsageSafely({ ...base, status: "blocked_by_budget", decision: "blocked_by_budget", errorMessage: message, estimatedUnits: typeof estimatedUnits === "number" && Number.isFinite(estimatedUnits) ? estimatedUnits : null });
+        return outcome({ decision: "blocked_by_budget", blocked: { reason: "blocked_by_budget", message } });
+      }
+    }
     const budget = await checkBudget({ provider, operation, businessId, estimatedCostUsd, limits });
     if (!budget.allowed) {
-      await recordUsageSafely({ ...base, status: budget.reason, decision: budget.reason, errorMessage: budget.message, estimatedCostUsd });
+      await recordUsageSafely({ ...base, status: budget.reason, decision: budget.reason, errorMessage: budget.message, estimatedCostUsd, estimatedUnits });
       return outcome({ decision: budget.reason, blocked: { reason: budget.reason, message: budget.message } });
     }
   } catch (err) {
@@ -323,6 +338,7 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
       outputTokens: usage && usage.outputTokens != null ? usage.outputTokens : null,
       cachedTokens: usage && usage.cachedTokens != null ? usage.cachedTokens : null,
       estimatedCostUsd,
+      estimatedUnits,
       actualCostUsd: usage && usage.actualCostUsd != null ? usage.actualCostUsd : null,
       providerUnitsUsed: usage && usage.providerUnitsUsed != null ? usage.providerUnitsUsed : null
     });
@@ -342,6 +358,9 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
       providerCalled: true,
       errorMessage: err.message,
       estimatedCostUsd,
+      estimatedUnits,
+      // unknown unless the provider reported it (a failed call may be billed)
+      providerUnitsUsed: u.providerUnitsUsed != null ? u.providerUnitsUsed : null,
       requestId: u.requestId || null,
       inputTokens: u.inputTokens != null ? u.inputTokens : null,
       outputTokens: u.outputTokens != null ? u.outputTokens : null,

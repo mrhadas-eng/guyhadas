@@ -80,6 +80,27 @@ module.exports = {
       cacheTtlMs: 24 * 60 * 60 * 1000,
       circuitBreakerThreshold: 5,
       circuitBreakerCooldownMs: 15 * 60 * 1000
+    },
+    // Semrush V4 Keyword Metrics pilot (semrushV4.js / keywordMetricsStore.js):
+    // enrichment of ONE approved query, 20 API units per request
+    // (developer.semrush.com "Get keyword metrics", verified 2026-10-13).
+    // maxEstimatedUnitsPerCall is a HARD cap enforced by the governor before
+    // the call (runGoverned refuses when the unit estimate is missing or
+    // above it). Pilot limits are deliberately tiny; raise them only after
+    // the pilot has been evaluated. A failed provider call counts toward
+    // the quota (it may have been billed).
+    enrichKeywordMetrics: {
+      unitsPerRequest: 20,
+      maxEstimatedUnitsPerCall: 20,
+      maxRequestsPerBusinessPerDay: 1,
+      maxRequestsPerBusinessPerMonth: 5,
+      maxRequestsGlobalPerDay: 2,
+      maxRequestsGlobalPerMonth: 10,
+      // The cache identity includes the month, so a cached answer is reused
+      // for the rest of that month and a new month is a new identity.
+      cacheTtlMs: 31 * 24 * 60 * 60 * 1000,
+      circuitBreakerThreshold: 3,
+      circuitBreakerCooldownMs: 60 * 60 * 1000
     }
   },
   google: {

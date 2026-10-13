@@ -18,6 +18,8 @@ Object.assign(exports, require("./decisionEngine"));
 Object.assign(exports, require("./trackingEngine"));
 // Semrush free balance check (V4-era, read-only; independent of the V3 adapter).
 exports.visibilityGetSemrushBalance = require("./semrushBalance").visibilityGetSemrushBalance;
+// Semrush V4 Keyword Metrics pilot: governed enrichment of ONE approved query (20 units, explicit owner action).
+exports.visibilityEnrichKeywordMetrics = require("./keywordMetrics").visibilityEnrichKeywordMetrics;
 
 const GUY_CALENDAR_EMAIL = "mr.hadas@gmail.com";
 

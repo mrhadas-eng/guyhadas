@@ -257,8 +257,15 @@ service cloud.firestore {
       allow read, write: if isAdmin();
     }
 
+    // keywords.marketDemand (Semrush V4 Keyword Metrics pilot) is server-
+    // written provider evidence (functions/keywordMetricsStore.js via the
+    // Admin SDK): the client may never create or change it, so a market-
+    // demand figure cannot be fabricated from the browser. Everything else
+    // on a keyword row is unchanged (admin read/write).
     match /keywords/{keywordId} {
-      allow read, write: if isAdmin();
+      allow read, delete: if isAdmin();
+      allow create: if isAdmin() && !("marketDemand" in request.resource.data);
+      allow update: if isAdmin() && !request.resource.data.diff(resource.data).affectedKeys().hasAny(["marketDemand"]);
     }
 
     match /competitors/{competitorId} {

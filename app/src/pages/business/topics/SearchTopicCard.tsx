@@ -10,6 +10,7 @@ import {
 import type { DiscoverySource, Keyword, SearchTopic, TopicQualification, TopicStatus } from "../../../types";
 import { Badge, type BadgeTone } from "../../../components/review/Badge";
 import { SeedComponentChip } from "./SeedDiscoveryPanel";
+import { KeywordMetricsPilot, MarketDemandSummary } from "./KeywordMetricsPilot";
 
 const STATUS_BADGE: Record<TopicStatus, { tone: BadgeTone; icon: string }> = {
   new: { tone: "warn", icon: "!" },
@@ -78,6 +79,11 @@ function KeywordRow({ kw }: { kw: Keyword }) {
         )}
         {kw.seedRefs && kw.seedRefs.length > 0 && <span>seed: {kw.seedRefs.map((r) => r.phrase).join(", ")}</span>}
       </div>
+      {kw.marketDemand && (
+        <div style={{ marginTop: 4 }}>
+          <MarketDemandSummary md={kw.marketDemand} />
+        </div>
+      )}
     </li>
   );
 }
@@ -89,6 +95,7 @@ export function SearchTopicCard({ topic }: { topic: SearchTopic }) {
   const [open, setOpen] = useState(false);
   const [keywords, setKeywords] = useState<Keyword[] | null>(null);
   const inReview = topic.status === "new" || topic.status === "unsure";
+  const approved = topic.status === "relevant" || topic.status === "priority" || topic.status === "brand_strategic";
   const cardClass = inReview ? "needs-review" : topic.status === "exclude" ? "rejected" : "confirmed";
   const set = (status: TopicStatus) => updateSearchTopicStatus(topic.id, status);
 
@@ -161,6 +168,7 @@ export function SearchTopicCard({ topic }: { topic: SearchTopic }) {
                   <li key={q} className="evidence-item" style={{ padding: "6px 12px" }}>{q}</li>
                 ))}
           </ul>
+          {approved && keywords && keywords.length > 0 && <KeywordMetricsPilot topic={topic} keywords={keywords} />}
         </div>
       )}
 

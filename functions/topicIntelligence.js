@@ -153,7 +153,19 @@ function computeTopicIntelligence({ topic, keywords, gscRows, gscStatus, pagesBy
     : { status: "not_available", reason: "no GSC discovery evidence on this topic's queries" };
 
   // ---- Semrush market demand (separate evidence) -----------------------
-  const sem = activeKeywords.map((k) => ({ q: k.query, e: (k.sources && k.sources.semrush) || (k.source === "semrush" ? { volume: k.volume, difficulty: k.difficulty } : null) })).filter((x) => x.e && x.e.volume != null);
+  // Compatibility mapping (Semrush V4 pilot): a provider-neutral
+  // keywords.marketDemand estimate (functions/keywordMetricsStore.js) is read
+  // as the same per-query { volume, difficulty } evidence as V3 discovery and
+  // takes precedence over it for that query (it is explicit and more recent).
+  // The block keeps its name and meaning (external market demand); M5 scoring
+  // is unchanged. Search Console evidence is never mixed in here.
+  const demandOf = (k) => {
+    const md = k.marketDemand;
+    if (md && md.source && md.searchVolume != null) return { volume: md.searchVolume, difficulty: md.keywordDifficulty ?? null, v4: { query: k.query, source: md.source, country: md.country, month: md.month, retrievedAt: md.retrievedAt } };
+    return (k.sources && k.sources.semrush) || (k.source === "semrush" ? { volume: k.volume, difficulty: k.difficulty } : null);
+  };
+  const sem = activeKeywords.map((k) => ({ q: k.query, e: demandOf(k) })).filter((x) => x.e && x.e.volume != null);
+  const v4Provenance = sem.filter((x) => x.e.v4).map((x) => x.e.v4);
   const semrush = sem.length
     ? {
         status: "available",
@@ -162,7 +174,9 @@ function computeTopicIntelligence({ topic, keywords, gscRows, gscStatus, pagesBy
         queriesWithVolume: sem.length,
         totalMonthlyVolume: sem.reduce((s, x) => s + (Number(x.e.volume) || 0), 0),
         maxDifficulty: sem.some((x) => x.e.difficulty != null) ? Math.max(...sem.filter((x) => x.e.difficulty != null).map((x) => Number(x.e.difficulty))) : null,
-        note: "sum of per-query monthly volumes; queries may overlap in intent"
+        note: "sum of per-query monthly volumes; queries may overlap in intent",
+        // only present when V4 enrichment contributed (keeps every other topic's output byte-identical)
+        ...(v4Provenance.length ? { demandProvenance: v4Provenance } : {})
       }
     : { status: "not_available", reason: "no Semrush evidence (Semrush live discovery deferred)" };
   if (semrush.status !== "available") missing.push("semrush_demand_not_available");
