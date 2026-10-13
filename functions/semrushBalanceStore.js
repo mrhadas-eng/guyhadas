@@ -98,6 +98,38 @@ function responseFormatOf(contentType, body) {
   return "unknown";
 }
 
+// Structured JSON error fields (no fixed Semrush schema assumed). Supports
+// {error:{code,message,description,request_id}}, {error:"..."}, top-level
+// {code,message,description,request_id} and {meta:{request_id}}. Values are
+// strings/numbers only, key-redacted, URL-query-redacted, control chars
+// stripped, length-bounded. Anything else is ignored. Never the raw body.
+const ERROR_FIELD_LIMITS = { errorCode: 40, errorMessage: 200, errorDescription: 300, requestId: 80 };
+function safeText(v, key, max) {
+  if (typeof v !== "string" && typeof v !== "number") return null;
+  const t = redact(String(v), key).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+  return t || null;
+}
+function jsonErrorOf(body, key) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(body || "").replace(/^\uFEFF/, ""));
+  } catch (err) {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const e = parsed.error;
+  const src = e && typeof e === "object" && !Array.isArray(e) ? e : parsed;
+  const meta = parsed.meta && typeof parsed.meta === "object" ? parsed.meta : {};
+  const pick = (...vals) => vals.find((v) => typeof v === "string" || typeof v === "number");
+  const out = {
+    errorCode: safeText(pick(src.code, src.error_code, src.status, parsed.code), key, ERROR_FIELD_LIMITS.errorCode),
+    errorMessage: safeText(typeof e === "string" ? e : pick(src.message, src.msg, src.title), key, ERROR_FIELD_LIMITS.errorMessage),
+    errorDescription: safeText(pick(src.description, src.detail, src.details, src.error_description), key, ERROR_FIELD_LIMITS.errorDescription),
+    requestId: safeText(pick(src.request_id, src.requestId, parsed.request_id, parsed.requestId, meta.request_id, meta.requestId), key, ERROR_FIELD_LIMITS.requestId)
+  };
+  return Object.fromEntries(Object.entries(out).filter(([, v]) => v != null));
+}
+
 function diagnosticOf(res, body, key) {
   const headers = res && res.headers;
   const rawType = headers && typeof headers.get === "function" ? headers.get("content-type") : null;
@@ -112,13 +144,15 @@ function diagnosticOf(res, body, key) {
   } catch (err) {
     finalPath = null;
   }
+  const responseFormat = responseFormatOf(rawType, body);
   return {
     httpStatus: res && typeof res.status === "number" ? res.status : null,
     contentType,
     redirected: !!(res && res.redirected),
     finalPath,
-    responseFormat: responseFormatOf(rawType, body),
-    bodyLength: String(body || "").length
+    responseFormat,
+    bodyLength: String(body || "").length,
+    ...(responseFormat === "json" ? jsonErrorOf(body, key) : {})
   };
 }
 
@@ -174,4 +208,4 @@ async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.f
   return { ok: true, currentBalance: parsed.balance, checkedAt };
 }
 
-module.exports = { checkSemrushBalance, parseBalance, redact, describeResponse, diagnosticOf, responseFormatOf, RESPONSE_FORMATS, configuredKey, BALANCE_URL, SOURCE };
+module.exports = { checkSemrushBalance, parseBalance, redact, describeResponse, diagnosticOf, jsonErrorOf, responseFormatOf, RESPONSE_FORMATS, configuredKey, BALANCE_URL, SOURCE };

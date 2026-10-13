@@ -12,6 +12,19 @@ export interface SemrushBalanceDiagnostic {
   finalPath: string | null;
   responseFormat: "html" | "json" | "csv" | "text" | "unknown";
   bodyLength: number | null;
+  // optional, only when the response was JSON with a structured error
+  errorCode?: string;
+  errorMessage?: string;
+  errorDescription?: string;
+  requestId?: string;
+}
+
+const ERROR_FIELDS: [keyof SemrushBalanceDiagnostic, number][] = [["errorCode", 40], ["errorMessage", 200], ["errorDescription", 300], ["requestId", 80]];
+// bounded, control chars stripped, and anything URL-with-query-like removed
+function safeField(v: unknown, max: number): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.replace(/https?:\/\/\S*\?\S*/gi, "[url redacted]").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
+  return t || undefined;
 }
 
 export type SemrushBalanceResult = { ok: true; currentBalance: number; checkedAt: string } | { ok: false; error: string; checkedAt: string | null; diagnostic?: SemrushBalanceDiagnostic };
@@ -32,7 +45,7 @@ function safeDiagnostic(x: unknown): SemrushBalanceDiagnostic | undefined {
       finalPath = null;
     }
   }
-  return {
+  const out: SemrushBalanceDiagnostic = {
     httpStatus: typeof d.httpStatus === "number" ? d.httpStatus : null,
     contentType: typeof d.contentType === "string" ? d.contentType.slice(0, 80) : null,
     redirected: d.redirected === true,
@@ -40,6 +53,11 @@ function safeDiagnostic(x: unknown): SemrushBalanceDiagnostic | undefined {
     responseFormat: (typeof d.responseFormat === "string" && FORMATS.includes(d.responseFormat) ? d.responseFormat : "unknown") as SemrushBalanceDiagnostic["responseFormat"],
     bodyLength: typeof d.bodyLength === "number" ? d.bodyLength : null
   };
+  for (const [k, max] of ERROR_FIELDS) {
+    const v = safeField(d[k], max);
+    if (v) (out as unknown as Record<string, string>)[k] = v;
+  }
+  return out;
 }
 
 interface IdTokenUser {

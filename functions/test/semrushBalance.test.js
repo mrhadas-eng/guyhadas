@@ -166,7 +166,49 @@ const noKey = (s, x) => assert.ok(!JSON.stringify(x).includes(KEY), "API key lea
     assert.strictEqual(r.diagnostic.responseFormat, "json");
     assert.strictEqual(r.diagnostic.httpStatus, 200);
     assert.strictEqual(r.diagnostic.redirected, false);
-    assert.ok(!JSON.stringify(r).includes("wrong key"), "body not returned");
+    assert.ok(!JSON.stringify(r).includes('{"error"'), "raw body not returned");
+    assert.strictEqual(r.diagnostic.errorMessage, "wrong key", "structured error string surfaced as a safe field");
+  });
+
+  await test("JSON error: error.code/message/description/request_id surfaced safely", async () => {
+    const s = setup();
+    const body = JSON.stringify({ error: { code: 40001, message: `Invalid API key ${KEY}`, description: "Use a Standard API key: https://www.semrush.com/x?key=" + KEY + "&a=b", request_id: "req-abc-123" }, extra: "x".repeat(50) });
+    const r = await s.check(richFetch(400, body, { contentType: "application/json" }));
+    const d = r.diagnostic;
+    assert.strictEqual(d.httpStatus, 400);
+    assert.strictEqual(d.responseFormat, "json");
+    assert.strictEqual(d.errorCode, "40001");
+    assert.strictEqual(d.errorMessage, "Invalid API key [redacted]");
+    assert.ok(/^Use a Standard API key: \[url redacted\]/.test(d.errorDescription), d.errorDescription);
+    assert.strictEqual(d.requestId, "req-abc-123");
+    const json = JSON.stringify(r);
+    assert.ok(!json.includes(KEY), "no key");
+    assert.ok(!/\?key=|&a=b/.test(json), "no query string");
+    assert.ok(!json.includes("xxxxxxxxxx") && !json.includes('"extra"'), "no raw body");
+  });
+
+  await test("JSON error: top-level / meta shapes and length bounds", async () => {
+    const s = setup();
+    const d1 = s.mod.jsonErrorOf(JSON.stringify({ code: "BAD_REQUEST", message: "m".repeat(1000), meta: { request_id: "r1" } }), KEY);
+    assert.strictEqual(d1.errorCode, "BAD_REQUEST");
+    assert.strictEqual(d1.errorMessage.length, 200);
+    assert.strictEqual(d1.requestId, "r1");
+    const d2 = s.mod.jsonErrorOf(JSON.stringify({ error: { code: { nested: true }, message: ["arr"] } }), KEY);
+    assert.deepStrictEqual(d2, {}, "non-scalar values ignored");
+  });
+
+  await test("JSON error: malformed JSON and JSON without error -> base diagnostic only", async () => {
+    const s = setup();
+    const r1 = await s.check(richFetch(400, '{"error": {"code": 1', { contentType: "application/json" }));
+    assert.deepStrictEqual(Object.keys(r1.diagnostic).sort(), ["bodyLength", "contentType", "finalPath", "httpStatus", "redirected", "responseFormat"]);
+    const r2 = await s.check(richFetch(400, '{"status":"fail","data":[1,2]}', { contentType: "application/json" }));
+    assert.deepStrictEqual(Object.keys(r2.diagnostic).sort(), ["bodyLength", "contentType", "errorCode", "finalPath", "httpStatus", "redirected", "responseFormat"]);
+    assert.strictEqual(r2.diagnostic.errorCode, "fail");
+    const r3 = await s.check(richFetch(400, '[{"error":"x"}]', { contentType: "application/json" }));
+    assert.strictEqual(r3.diagnostic.errorMessage, undefined, "arrays are not parsed for fields");
+    // HTML is never parsed for error fields
+    const r4 = await s.check(richFetch(400, '<html>{"error":"x"}</html>', { contentType: "text/html" }));
+    assert.strictEqual(r4.diagnostic.errorMessage, undefined);
   });
 
   await test("UI diagnostic: formats text / csv / unknown; success has no diagnostic", async () => {
@@ -246,6 +288,9 @@ const noKey = (s, x) => assert.ok(!JSON.stringify(x).includes(KEY), "API key lea
     const res = resFake();
     const { handleBalanceRequest: h } = require("../semrushBalance");
     await h({ method: "POST" }, res, { cors: () => {}, auth: async () => ({ email: "owner" }), check: async () => ({ ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 403, contentType: "text/html", redirected: true, finalPath: "https://www.semrush.com/login/", responseFormat: "html", bodyLength: 12431, body: KEY, url: `https://x/?key=${KEY}` } }) });
+    const jr = resFake();
+    await h({ method: "POST" }, jr, { cors: () => {}, auth: async () => ({ email: "owner" }), check: async () => ({ ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 400, contentType: "application/json", redirected: false, finalPath: "p", responseFormat: "json", bodyLength: 126, errorCode: "1", errorMessage: "m", errorDescription: "d", requestId: "r", rawBody: KEY } }) });
+    assert.deepStrictEqual(jr.body.diagnostic, { httpStatus: 400, contentType: "application/json", redirected: false, finalPath: "p", responseFormat: "json", bodyLength: 126, errorCode: "1", errorMessage: "m", errorDescription: "d", requestId: "r" });
     assert.deepStrictEqual(res.body, { ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 403, contentType: "text/html", redirected: true, finalPath: "https://www.semrush.com/login/", responseFormat: "html", bodyLength: 12431 } });
     const okRes = resFake();
     await h({ method: "POST" }, okRes, { cors: () => {}, auth: async () => ({ email: "owner" }), check: async () => ({ ok: true, currentBalance: 5, checkedAt: "t" }) });

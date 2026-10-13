@@ -50,6 +50,10 @@ export default function SemrushBalanceCheck({ onResult }: { onResult?: (r: Semru
                 {result.diagnostic.finalPath && <li>Final path: {result.diagnostic.finalPath}</li>}
                 <li>Format: {result.diagnostic.responseFormat}</li>
                 <li>Body: {result.diagnostic.bodyLength ?? "—"} bytes</li>
+                {result.diagnostic.errorCode && <li>Error code: {result.diagnostic.errorCode}</li>}
+                {result.diagnostic.errorMessage && <li>Error message: {result.diagnostic.errorMessage}</li>}
+                {result.diagnostic.errorDescription && <li>Error description: {result.diagnostic.errorDescription}</li>}
+                {result.diagnostic.requestId && <li>Request ID: {result.diagnostic.requestId}</li>}
               </ul>
             </div>
           )}

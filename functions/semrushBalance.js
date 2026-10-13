@@ -32,6 +32,8 @@ async function handleBalanceRequest(req, res, { auth = requireAdmin, check = che
     if (!r.ok && r.diagnostic) {
       const d = r.diagnostic;
       body.diagnostic = { httpStatus: d.httpStatus ?? null, contentType: d.contentType ?? null, redirected: !!d.redirected, finalPath: d.finalPath ?? null, responseFormat: d.responseFormat ?? "unknown", bodyLength: d.bodyLength ?? null };
+      // optional structured JSON error fields (already redacted/bounded in the store)
+      for (const k of ["errorCode", "errorMessage", "errorDescription", "requestId"]) if (typeof d[k] === "string" && d[k]) body.diagnostic[k] = d[k].slice(0, 300);
     }
     res.status(r.ok ? 200 : 502).json(body);
   } catch (err) {
