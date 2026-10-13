@@ -146,7 +146,7 @@ function mapKeywordMetrics(json, { keyword, country, month, retrievedAt }) {
     // What this is - and what it is not.
     kind: "market_demand_estimate",
     basis: "provider_estimate",
-    note: "Semrush market-demand estimate (12-month average) - not observed Google traffic and not Search Console visibility",
+    note: "Semrush market-demand estimate for the specified monthly snapshot - not observed Google traffic and not Search Console visibility",
     source: "semrush_v4",
     providerVersion: PROVIDER_VERSION,
     requestId: safeText(meta.request_id, 80),
