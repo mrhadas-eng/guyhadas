@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types test/paidRunFlow.test.ts && node --experimental-strip-types test/noProviderCallOnRender.test.ts && node --experimental-strip-types test/pagePriority.test.ts && node --experimental-strip-types test/semrushBalance.test.ts"
+    "test": "node --experimental-strip-types test/paidRunFlow.test.ts && node --experimental-strip-types test/noProviderCallOnRender.test.ts && node --experimental-strip-types test/pagePriority.test.ts && node --experimental-strip-types test/semrushBalance.test.ts && node --experimental-strip-types test/semrushStatus.test.ts"
   },
   "dependencies": {
     "firebase": "^11.0.0",

@@ -6,7 +6,7 @@ import { getSemrushBalance, type SemrushBalanceResult } from "../../lib/function
 // the deployed free balance function (0 API units). Runs ONLY when the button
 // is clicked - never on page load, render or a listener. Not the final usage
 // dashboard.
-export default function SemrushBalanceCheck() {
+export default function SemrushBalanceCheck({ onResult }: { onResult?: (r: SemrushBalanceResult) => void } = {}) {
   const { isAuthorized } = useAuth();
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SemrushBalanceResult | null>(null);
@@ -15,7 +15,9 @@ export default function SemrushBalanceCheck() {
   async function check() {
     setBusy(true);
     try {
-      setResult(await getSemrushBalance());
+      const r = await getSemrushBalance();
+      setResult(r);
+      if (onResult) onResult(r);
     } finally {
       setBusy(false);
     }
