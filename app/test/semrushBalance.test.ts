@@ -91,6 +91,22 @@ const user = (token = "ID_TOKEN_123", calls?: { n: number }) => ({ getIdToken: a
   assert.ok(/פרטי אבחון/.test(page) && /result && !result\.ok/.test(page), "diagnostics shown only in the failure branch");
 }
 
+// structured JSON error fields: validated independently, bounded, no raw body
+{
+  const calls: Call[] = [];
+  const r = await requestSemrushBalance(() => user(), mkFetch(502, { ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 400, contentType: "application/json", redirected: false, finalPath: "https://www.semrush.com/users/countapiunits.html?key=SECRET", responseFormat: "json", bodyLength: 126, errorCode: "40001", errorMessage: "Invalid key", errorDescription: "see https://x.example/a?key=SECRET", requestId: "req-1", rawBody: "{SECRET}" } }, calls), URL_);
+  const d = (r as { diagnostic?: Record<string, unknown> }).diagnostic!;
+  assert.deepStrictEqual(d, { httpStatus: 400, contentType: "application/json", redirected: false, finalPath: "https://www.semrush.com/users/countapiunits.html", responseFormat: "json", bodyLength: 126, errorCode: "40001", errorMessage: "Invalid key", errorDescription: "see [url redacted]", requestId: "req-1" });
+  assert.ok(!JSON.stringify(r).includes("SECRET"), "no key / query / raw body");
+  const long = await requestSemrushBalance(() => user(), mkFetch(502, { ok: false, error: "x", checkedAt: "t", diagnostic: { responseFormat: "json", errorMessage: "m".repeat(999), errorCode: 5, requestId: { a: 1 } } }, calls), URL_);
+  const ld = (long as { diagnostic?: Record<string, unknown> }).diagnostic!;
+  assert.strictEqual((ld.errorMessage as string).length, 200);
+  assert.strictEqual("errorCode" in ld, false, "non-string values dropped");
+  assert.strictEqual("requestId" in ld, false);
+  const none = await requestSemrushBalance(() => user(), mkFetch(502, { ok: false, error: "x", checkedAt: "t", diagnostic: { responseFormat: "json" } }, calls), URL_);
+  assert.strictEqual("errorMessage" in (none as { diagnostic: Record<string, unknown> }).diagnostic, false);
+}
+
 // no automatic invocation: the control calls getSemrushBalance only from the click handler
 {
   const src = readFileSync(new URL("../src/pages/business/SemrushBalanceCheck.tsx", import.meta.url), "utf8");
