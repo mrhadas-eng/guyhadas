@@ -633,7 +633,30 @@ export interface Keyword {
   seedRefs?: SeedRef[];
   grouping?: { rule: "exact" | "title_token_overlap" | "new_topic" | "existing_keyword"; score: number | null; topicTitle: string } | null;
   excludedByRule?: { ruleId: string; rule: string; reason: "owner_exclusion_rule" } | null;
+  // Semrush V4 Keyword Metrics pilot: server-written, provider-neutral
+  // market-demand ESTIMATE (not observed Google traffic). Client never writes it.
+  marketDemand?: MarketDemand | null;
   discoveredAt: unknown;
+}
+
+export interface MarketDemand {
+  keyword: string;
+  country: string;
+  month: string;
+  searchVolume: number | null;
+  keywordDifficulty: number | null;
+  intents: string[];
+  competitiveDensity: number | null;
+  cpc: number | null; // USD
+  cpcCurrency?: "USD";
+  numberOfResults: number | null;
+  serpFeatures: string[];
+  trends: (number | null)[];
+  metricsAvailable: boolean;
+  dataQuality?: string[];
+  kind: "market_demand_estimate";
+  source: "semrush_v4";
+  retrievedAt: string;
 }
 
 export interface Competitor {

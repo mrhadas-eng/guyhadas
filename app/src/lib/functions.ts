@@ -1,6 +1,6 @@
 import { auth } from "../firebase";
 import { requestSemrushBalance, type SemrushBalanceResult } from "./semrushBalance";
-import type { Ga4SnapshotData, SearchConsoleSnapshotData, CrawlReport, CostControlDecision, SeedBuildResult, SeedRef } from "../types";
+import type { Ga4SnapshotData, SearchConsoleSnapshotData, CrawlReport, CostControlDecision, SeedBuildResult, SeedRef, MarketDemand } from "../types";
 
 // Thin wrapper around the Visibility OS Cloud Functions (functions/visibility.js,
 // Milestone 2+). Same deployment shape as the existing public-site functions
@@ -316,4 +316,27 @@ export type { SemrushBalanceResult };
 
 export function getSemrushBalance(): Promise<SemrushBalanceResult> {
   return requestSemrushBalance(() => auth.currentUser, (url, init) => fetch(url, init), `${FUNCTIONS_BASE}/visibilityGetSemrushBalance`);
+}
+
+// --- Semrush V4 Keyword Metrics pilot (functions/keywordMetrics.js) ---
+// ONE approved query per call; a cache hit costs 0, a miss is ONE paid
+// Semrush V4 request (20 API units, hard-capped by the governor). Only ever
+// called from the explicit confirmation button - never on render.
+export interface KeywordMetricsResult {
+  keywordId: string;
+  topicId: string;
+  query: string;
+  country: string;
+  month: string;
+  marketDemand: MarketDemand;
+  cacheHit: boolean;
+  cacheDecision: string;
+  providerCalled: boolean;
+  providerUnitsUsed: number;
+  estimatedUnits: number;
+  stored: boolean;
+}
+
+export function enrichKeywordMetrics(businessId: string, topicId: string, query: string): Promise<KeywordMetricsResult> {
+  return callFunction<KeywordMetricsResult>("visibilityEnrichKeywordMetrics", { businessId, topicId, query, country: "IL", confirmPaidCall: true });
 }
