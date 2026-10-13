@@ -28,6 +28,11 @@ async function handleBalanceRequest(req, res, { auth = requireAdmin, check = che
     const r = await check();
     // only the documented safe fields ever leave the function
     const body = r.ok ? { ok: true, currentBalance: r.currentBalance, checkedAt: r.checkedAt } : { ok: false, error: r.error, checkedAt: r.checkedAt };
+    // additional, failure-only: rebuilt from the six safe fields, nothing else
+    if (!r.ok && r.diagnostic) {
+      const d = r.diagnostic;
+      body.diagnostic = { httpStatus: d.httpStatus ?? null, contentType: d.contentType ?? null, redirected: !!d.redirected, finalPath: d.finalPath ?? null, responseFormat: d.responseFormat ?? "unknown", bodyLength: d.bodyLength ?? null };
+    }
     res.status(r.ok ? 200 : 502).json(body);
   } catch (err) {
     console.error("visibilityGetSemrushBalance: unexpected failure");

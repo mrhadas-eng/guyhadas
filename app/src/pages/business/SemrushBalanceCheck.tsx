@@ -40,6 +40,19 @@ export default function SemrushBalanceCheck({ onResult }: { onResult?: (r: Semru
         <div className="login-error" role="alert" style={{ marginTop: "var(--space-3)" }}>
           הבדיקה נכשלה: {result.error}
           {result.checkedAt ? ` · ${when(result.checkedAt)}` : ""}
+          {result.diagnostic && (
+            <div style={{ marginTop: "var(--space-2)" }}>
+              <strong>פרטי אבחון</strong>
+              <ul className="tech-list" dir="ltr" style={{ textAlign: "left" }}>
+                <li>HTTP: {result.diagnostic.httpStatus ?? "—"}</li>
+                <li>Content-Type: {result.diagnostic.contentType || "—"}</li>
+                <li>Redirected: {result.diagnostic.redirected ? "yes" : "no"}</li>
+                {result.diagnostic.finalPath && <li>Final path: {result.diagnostic.finalPath}</li>}
+                <li>Format: {result.diagnostic.responseFormat}</li>
+                <li>Body: {result.diagnostic.bodyLength ?? "—"} bytes</li>
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </div>

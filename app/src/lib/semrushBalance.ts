@@ -5,7 +5,42 @@
 // balance request (0 API units) - never a paid report. The API key never
 // reaches the browser; only { ok, currentBalance, checkedAt } / error come back.
 
-export type SemrushBalanceResult = { ok: true; currentBalance: number; checkedAt: string } | { ok: false; error: string; checkedAt: string | null };
+export interface SemrushBalanceDiagnostic {
+  httpStatus: number | null;
+  contentType: string | null;
+  redirected: boolean;
+  finalPath: string | null;
+  responseFormat: "html" | "json" | "csv" | "text" | "unknown";
+  bodyLength: number | null;
+}
+
+export type SemrushBalanceResult = { ok: true; currentBalance: number; checkedAt: string } | { ok: false; error: string; checkedAt: string | null; diagnostic?: SemrushBalanceDiagnostic };
+
+const FORMATS = ["html", "json", "csv", "text", "unknown"];
+
+// Picks only the six safe diagnostic fields, type-checked; finalPath keeps
+// origin + path only (any query string is dropped).
+function safeDiagnostic(x: unknown): SemrushBalanceDiagnostic | undefined {
+  if (!x || typeof x !== "object") return undefined;
+  const d = x as Record<string, unknown>;
+  let finalPath: string | null = null;
+  if (typeof d.finalPath === "string") {
+    try {
+      const u = new URL(d.finalPath);
+      finalPath = `${u.origin}${u.pathname}`;
+    } catch {
+      finalPath = null;
+    }
+  }
+  return {
+    httpStatus: typeof d.httpStatus === "number" ? d.httpStatus : null,
+    contentType: typeof d.contentType === "string" ? d.contentType.slice(0, 80) : null,
+    redirected: d.redirected === true,
+    finalPath,
+    responseFormat: (typeof d.responseFormat === "string" && FORMATS.includes(d.responseFormat) ? d.responseFormat : "unknown") as SemrushBalanceDiagnostic["responseFormat"],
+    bodyLength: typeof d.bodyLength === "number" ? d.bodyLength : null
+  };
+}
 
 interface IdTokenUser {
   getIdToken: () => Promise<string>;
@@ -37,5 +72,6 @@ export async function requestSemrushBalance(getUser: () => IdTokenUser | null, f
     return { ok: true, currentBalance: body.currentBalance, checkedAt };
   }
   const error = typeof body.error === "string" && body.error ? body.error : `בדיקת היתרה נכשלה (${status || "ללא תגובה"})`;
-  return { ok: false, error, checkedAt };
+  const diagnostic = safeDiagnostic(body.diagnostic);
+  return diagnostic ? { ok: false, error, checkedAt, diagnostic } : { ok: false, error, checkedAt };
 }

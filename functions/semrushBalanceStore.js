@@ -83,6 +83,45 @@ function describeResponse(res, body, key) {
   return `status=${res ? res.status : "?"} contentType=${contentType || "none"} redirected=${!!(res && res.redirected)} finalUrl=${finalPath || "unknown"} length=${String(body || "").length} format=${format} bodyStart="${snippet}"`;
 }
 
+// SAFE diagnostic metadata returned to the admin UI when the answer is not
+// recognized (Cloud Logging is not always accessible). Never the body, never
+// the key, never a query string or the request URL, never headers other than
+// the content type.
+const RESPONSE_FORMATS = ["html", "json", "csv", "text", "unknown"];
+function responseFormatOf(contentType, body) {
+  const ct = String(contentType || "").toLowerCase();
+  const t = String(body || "").replace(/^\uFEFF/, "").trim();
+  if (/html|xml/.test(ct) || t.startsWith("<")) return "html";
+  if (/json/.test(ct) || t.startsWith("{") || t.startsWith("[")) return "json";
+  if (/csv/.test(ct) || (/[;,]/.test(t) && /\n/.test(t))) return "csv";
+  if (t || /text\//.test(ct)) return "text";
+  return "unknown";
+}
+
+function diagnosticOf(res, body, key) {
+  const headers = res && res.headers;
+  const rawType = headers && typeof headers.get === "function" ? headers.get("content-type") : null;
+  // content type: media type + charset only, bounded, key-redacted
+  const contentType = rawType ? redact(String(rawType).replace(/[^\w\/+.;=\- ]/g, "").slice(0, 80), key) : null;
+  let finalPath = null;
+  try {
+    if (res && res.url) {
+      const u = new URL(res.url);
+      finalPath = redact(`${u.origin}${u.pathname}`, key);
+    }
+  } catch (err) {
+    finalPath = null;
+  }
+  return {
+    httpStatus: res && typeof res.status === "number" ? res.status : null,
+    contentType,
+    redirected: !!(res && res.redirected),
+    finalPath,
+    responseFormat: responseFormatOf(rawType, body),
+    bodyLength: String(body || "").length
+  };
+}
+
 // deps: { env, fetchImpl, nowMs, db, log } - injectable for tests.
 async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.fetch, nowMs = Date.now(), db = null, log = console } = {}) {
   const checkedAt = new Date(nowMs).toISOString();
@@ -116,11 +155,11 @@ async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.f
       return fail(`Semrush rejected the balance request: ${redact(parsed.detail.replace(/^ERROR\s*\d*\s*::\s*/i, ""), key)}`);
     }
     log.error(`Semrush balance check: unexpected response: ${describeResponse(response, body, key)}`);
-    return fail("Semrush returned an unexpected response to the balance request.");
+    return { ...fail("Semrush returned an unexpected response to the balance request."), diagnostic: diagnosticOf(response, body, key) };
   }
   if (status != null && (status < 200 || status >= 300)) {
     log.error(`Semrush balance check: HTTP error: ${describeResponse(response, body, key)}`);
-    return fail(`Semrush returned HTTP ${status} for the balance request.`);
+    return { ...fail(`Semrush returned HTTP ${status} for the balance request.`), diagnostic: diagnosticOf(response, body, key) };
   }
 
   // Append-only snapshot (fresh id, create - never overwrites).
@@ -135,4 +174,4 @@ async function checkSemrushBalance({ env = process.env, fetchImpl = globalThis.f
   return { ok: true, currentBalance: parsed.balance, checkedAt };
 }
 
-module.exports = { checkSemrushBalance, parseBalance, redact, describeResponse, configuredKey, BALANCE_URL, SOURCE };
+module.exports = { checkSemrushBalance, parseBalance, redact, describeResponse, diagnosticOf, responseFormatOf, RESPONSE_FORMATS, configuredKey, BALANCE_URL, SOURCE };
