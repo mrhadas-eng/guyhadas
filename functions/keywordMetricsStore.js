@@ -85,6 +85,11 @@ async function enrichKeywordMetrics({ businessId, topicId, query, country = "IL"
       error: `Semrush V4 request failed: ${String(err.message || "error").slice(0, 300)}`,
       errorCode: err.errorCode || null,
       httpStatus: err.httpStatus || null,
+      requestId: err.requestId || null,
+      retryable: typeof err.retryable === "boolean" ? err.retryable : null,
+      contentType: err.contentType || null,
+      responseFormat: err.responseFormat || null,
+      bodyLength: Number.isInteger(err.bodyLength) ? err.bodyLength : null,
       providerCalled: err.providerCalled === true,
       cacheDecision: err.decision || null,
       providerUnitsUsed: null, // unknown - Semrush does not document whether failed requests are billed

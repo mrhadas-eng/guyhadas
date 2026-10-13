@@ -9,6 +9,32 @@ import type { Keyword, MarketDemand, SearchTopic } from "../../../types";
 const INTENT_HE: Record<string, string> = { commercial: "מסחרית", informational: "מידע", navigational: "ניווט", transactional: "רכישה" };
 const n = (v: number | null | undefined, d = 0) => (v === null || v === undefined ? "—" : Number(v).toLocaleString("he-IL", { maximumFractionDigits: d }));
 
+// Safe provider diagnostics from a failed call (display only; typed + bounded).
+interface ProviderDiagnostic {
+  httpStatus: number | null;
+  errorCode: string | null;
+  requestId: string | null;
+  retryable: boolean | null;
+  contentType: string | null;
+  responseFormat: string | null;
+  bodyLength: number | null;
+}
+function providerDiagnostic(d: unknown): ProviderDiagnostic | null {
+  if (!d || typeof d !== "object") return null;
+  const x = d as Record<string, unknown>;
+  const str = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max) : null);
+  const out: ProviderDiagnostic = {
+    httpStatus: typeof x.httpStatus === "number" ? x.httpStatus : null,
+    errorCode: str(x.errorCode, 40),
+    requestId: str(x.requestId, 80),
+    retryable: typeof x.retryable === "boolean" ? x.retryable : null,
+    contentType: str(x.contentType, 80),
+    responseFormat: str(x.responseFormat, 10),
+    bodyLength: typeof x.bodyLength === "number" ? x.bodyLength : null
+  };
+  return out.httpStatus !== null || out.errorCode || out.requestId ? out : null;
+}
+
 export function MarketDemandSummary({ md }: { md: MarketDemand }) {
   return (
     <div className="text-dim" style={{ fontSize: "0.8rem" }}>
@@ -40,18 +66,21 @@ export function KeywordMetricsPilot({ topic, keywords }: { topic: SearchTopic; k
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<KeywordMetricsResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [diag, setDiag] = useState<ProviderDiagnostic | null>(null);
   if (!options.length) return null;
 
   async function run() {
     setBusy(true);
     setError(null);
+    setDiag(null);
     try {
       setResult(await enrichKeywordMetrics(topic.businessId, topic.id, query));
     } catch (err) {
       const d = governedDetails(err);
       const why = d?.blockedReason ? ` (${d.blockedReason})` : "";
       const units = d?.providerCalled ? " · הבקשה נשלחה ל-Semrush (ייתכן שחויבו עד 20 יחידות)" : " · לא נשלחה בקשה ל-Semrush";
-      setError(`${(err as Error).message}${why}${units}`);
+      setError(`${(err as Error).message}${why}${units}`.slice(0, 600));
+      setDiag(providerDiagnostic(d));
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -97,6 +126,20 @@ export function KeywordMetricsPilot({ topic, keywords }: { topic: SearchTopic; k
       {error && (
         <div className="login-error" role="alert" style={{ marginTop: "var(--space-2)" }}>
           הבדיקה לא בוצעה: {error}
+          {diag && (
+            <div style={{ marginTop: "var(--space-2)" }}>
+              <strong>פרטי אבחון</strong>
+              <ul className="tech-list" dir="ltr" style={{ textAlign: "left" }}>
+                <li>HTTP: {diag.httpStatus ?? "—"}</li>
+                <li>Error code: {diag.errorCode ?? "—"}</li>
+                <li>Request ID: {diag.requestId ?? "—"}</li>
+                <li>Retryable: {diag.retryable === null ? "—" : diag.retryable ? "yes" : "no"}</li>
+                {diag.contentType && <li>Content-Type: {diag.contentType}</li>}
+                {diag.responseFormat && <li>Format: {diag.responseFormat}</li>}
+                {diag.bodyLength !== null && <li>Body: {diag.bodyLength} bytes</li>}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </div>

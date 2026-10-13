@@ -46,6 +46,10 @@ class SemrushV4Error extends Error {
     this.errorCode = fields.errorCode ?? null;
     this.requestId = fields.requestId ?? null;
     this.retryable = fields.retryable ?? null;
+    // safe response metadata (no body, no headers other than a request id)
+    this.contentType = fields.contentType ?? null;
+    this.responseFormat = fields.responseFormat ?? null;
+    this.bodyLength = fields.bodyLength ?? null;
   }
 }
 
@@ -154,6 +158,26 @@ function mapKeywordMetrics(json, { keyword, country, month, retrievedAt }) {
   };
 }
 
+// Safe, bounded metadata about a failed response - never the body itself and
+// never any request header. A request id may come from a response header
+// when the body is not Semrush JSON (e.g. an edge/WAF 403 page).
+const REQUEST_ID_HEADERS = ["x-request-id", "x-semrush-request-id", "request-id", "cf-ray"];
+function responseDiagnostic(res, text, json) {
+  const get = (h) => (res && res.headers && typeof res.headers.get === "function" ? res.headers.get(h) : null);
+  const contentType = safeText(get("content-type"), 80);
+  let headerRequestId = null;
+  for (const h of REQUEST_ID_HEADERS) {
+    const v = safeText(get(h), 80);
+    if (v) {
+      headerRequestId = h === "cf-ray" ? `cf-ray:${v}` : v;
+      break;
+    }
+  }
+  const t = typeof text === "string" ? text.trim() : "";
+  const responseFormat = json && typeof json === "object" ? "json" : /^<(!doctype|html)/i.test(t) ? "html" : t ? "text" : "empty";
+  return { contentType, headerRequestId, responseFormat, bodyLength: typeof text === "string" ? text.length : null };
+}
+
 // ONE request, no retry. Returns { metrics, requestId, httpStatus }.
 async function fetchKeywordMetrics(keyword, country, month, { fetchImpl = fetch, env = process.env, nowMs = Date.now(), timeoutMs = REQUEST_TIMEOUT_MS } = {}) {
   const kw = String(keyword || "").replace(/\s+/g, " ").trim();
@@ -161,6 +185,18 @@ async function fetchKeywordMetrics(keyword, country, month, { fetchImpl = fetch,
   if (!/^[A-Z]{2}$/.test(String(country || ""))) throw new SemrushV4Error("country must be an ISO 3166-1 alpha-2 code", { errorCode: "invalid_country" });
   if (month != null && !/^\d{4}-\d{2}$/.test(String(month))) throw new SemrushV4Error("month must be YYYY-MM", { errorCode: "invalid_month" });
   if (!isSemrushV4Configured(env)) throw new SemrushV4Error("Semrush V4 is not configured", { errorCode: "not_configured" });
+
+  const apiKey = String(env.SEMRUSH_API_KEY).trim();
+  // A provider may echo the credential back in an error; nothing derived from
+  // a response may contain it.
+  const scrubError = (err) => {
+    if (err instanceof SemrushV4Error) {
+      for (const f of ["message", "errorCode", "requestId", "contentType"]) {
+        if (typeof err[f] === "string" && err[f].includes(apiKey)) err[f] = err[f].split(apiKey).join("[redacted]");
+      }
+    }
+    return err;
+  };
 
   const url = new URL(KEYWORD_METRICS_URL);
   url.searchParams.set("keyword", kw);
@@ -174,7 +210,7 @@ async function fetchKeywordMetrics(keyword, country, month, { fetchImpl = fetch,
   try {
     res = await fetchImpl(url.toString(), {
       method: "GET",
-      headers: { Authorization: `Apikey ${String(env.SEMRUSH_API_KEY).trim()}`, Accept: "application/json" },
+      headers: { Authorization: `Apikey ${apiKey}`, Accept: "application/json" },
       redirect: "error",
       signal: controller ? controller.signal : undefined
     });
@@ -194,15 +230,24 @@ async function fetchKeywordMetrics(keyword, country, month, { fetchImpl = fetch,
   if (!res.ok) {
     const e = json && json.error && typeof json.error === "object" ? json.error : {};
     const meta = json && json.meta && typeof json.meta === "object" ? json.meta : {};
-    throw new SemrushV4Error(`Semrush V4 HTTP ${res.status}: ${safeText(e.message, 200) || "no error message"}`, {
+    const d = responseDiagnostic(res, text, json);
+    throw scrubError(new SemrushV4Error(`Semrush V4 HTTP ${res.status}: ${safeText(e.message, 200) || "no error message"}`, {
       httpStatus: res.status,
       errorCode: safeText(String(e.code ?? ""), 40),
-      requestId: safeText(meta.request_id, 80),
-      retryable: typeof e.retryable === "boolean" ? e.retryable : null
-    });
+      requestId: safeText(meta.request_id, 80) || d.headerRequestId,
+      retryable: typeof e.retryable === "boolean" ? e.retryable : null,
+      contentType: d.contentType,
+      responseFormat: d.responseFormat,
+      bodyLength: d.bodyLength
+    }));
   }
   if (json === undefined) throw new SemrushV4Error("Semrush V4 response was not valid JSON", { httpStatus: res.status, errorCode: "malformed_response" });
-  const metrics = mapKeywordMetrics(json, { keyword: kw, country, month, retrievedAt: new Date(nowMs).toISOString() });
+  let metrics;
+  try {
+    metrics = mapKeywordMetrics(json, { keyword: kw, country, month, retrievedAt: new Date(nowMs).toISOString() });
+  } catch (err) {
+    throw scrubError(err);
+  }
   return { metrics, requestId: metrics.requestId, httpStatus: res.status };
 }
 
