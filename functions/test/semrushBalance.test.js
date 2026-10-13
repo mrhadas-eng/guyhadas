@@ -118,7 +118,7 @@ const noKey = (s, x) => assert.ok(!JSON.stringify(x).includes(KEY), "API key lea
     const s = setup();
     const html = `<!DOCTYPE html><html><head><title>Log in to Semrush</title></head><body><a href="https://www.semrush.com/login/?redirect_to=/users/countapiunits.html?key=${KEY}">x</a> ${KEY}</body></html>`;
     const r = await s.check(richFetch(200, html, { contentType: "text/html; charset=utf-8", url: `https://www.semrush.com/login/?src=x&key=${KEY}`, redirected: true }));
-    assert.deepStrictEqual(Object.keys(r).sort(), ["checkedAt", "error", "ok"], "returned contract unchanged");
+    assert.deepStrictEqual(Object.keys(r).filter((k) => k !== "diagnostic").sort(), ["checkedAt", "error", "ok"], "returned contract unchanged (diagnostic is additional)");
     assert.ok(/unexpected response/.test(r.error));
     const line = s.logs.join("\n");
     assert.ok(/status=200/.test(line));
@@ -146,6 +146,38 @@ const noKey = (s, x) => assert.ok(!JSON.stringify(x).includes(KEY), "API key lea
     assert.ok(/HTTP error: status=403/.test(t.logs.join(" ")));
     assert.ok(!t.logs.join(" ").includes(KEY));
     assert.strictEqual(s.snaps().length + t.snaps().length, 0);
+  });
+
+  await test("UI diagnostic: unexpected HTML response -> safe metadata only", async () => {
+    const s = setup();
+    const html = `<!DOCTYPE html><html><body>login ${KEY}</body></html>`;
+    const r = await s.check(richFetch(403, html, { contentType: "text/html; charset=utf-8", url: `https://www.semrush.com/login/?next=/users/countapiunits.html&key=${KEY}`, redirected: true }));
+    assert.strictEqual(r.ok, false);
+    assert.deepStrictEqual(r.diagnostic, { httpStatus: 403, contentType: "text/html; charset=utf-8", redirected: true, finalPath: "https://www.semrush.com/login/", responseFormat: "html", bodyLength: html.length });
+    const json = JSON.stringify(r);
+    assert.ok(!json.includes(KEY), "no key");
+    assert.ok(!/\?|next=|key=/.test(JSON.stringify(r.diagnostic)), "no query string");
+    assert.ok(!/login \S/.test(JSON.stringify(r.diagnostic)) && !json.includes("<html"), "no raw body");
+  });
+
+  await test("UI diagnostic: JSON response", async () => {
+    const s = setup();
+    const r = await s.check(richFetch(200, '{"error":"wrong key"}', { contentType: "application/json" }));
+    assert.strictEqual(r.diagnostic.responseFormat, "json");
+    assert.strictEqual(r.diagnostic.httpStatus, 200);
+    assert.strictEqual(r.diagnostic.redirected, false);
+    assert.ok(!JSON.stringify(r).includes("wrong key"), "body not returned");
+  });
+
+  await test("UI diagnostic: formats text / csv / unknown; success has no diagnostic", async () => {
+    const s = setup();
+    assert.strictEqual(s.mod.responseFormatOf("text/plain", "hello"), "text");
+    assert.strictEqual(s.mod.responseFormatOf(null, "a;b\n1;2"), "csv");
+    assert.strictEqual(s.mod.responseFormatOf(null, ""), "unknown");
+    assert.ok(s.mod.RESPONSE_FORMATS.includes(s.mod.responseFormatOf("x/y", "<p>")));
+    const ok = await s.check(richFetch(200, "2000000", { contentType: "text/plain" }));
+    assert.strictEqual(ok.ok, true);
+    assert.strictEqual("diagnostic" in ok, false);
   });
 
   await test("parser: BOM-prefixed and CRLF numeric answers are accepted", async () => {
@@ -208,6 +240,16 @@ const noKey = (s, x) => assert.ok(!JSON.stringify(x).includes(KEY), "API key lea
     await handleBalanceRequest({ method: "POST" }, bad, { cors: noCors, auth: async () => ({ email: "owner" }), check: async () => ({ ok: false, error: "x", checkedAt: "t", detail: KEY }) });
     assert.strictEqual(bad.statusCode, 502);
     assert.deepStrictEqual(bad.body, { ok: false, error: "x", checkedAt: "t" });
+  });
+
+  await test("endpoint: diagnostic passed through rebuilt from the six safe fields only", async () => {
+    const res = resFake();
+    const { handleBalanceRequest: h } = require("../semrushBalance");
+    await h({ method: "POST" }, res, { cors: () => {}, auth: async () => ({ email: "owner" }), check: async () => ({ ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 403, contentType: "text/html", redirected: true, finalPath: "https://www.semrush.com/login/", responseFormat: "html", bodyLength: 12431, body: KEY, url: `https://x/?key=${KEY}` } }) });
+    assert.deepStrictEqual(res.body, { ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 403, contentType: "text/html", redirected: true, finalPath: "https://www.semrush.com/login/", responseFormat: "html", bodyLength: 12431 } });
+    const okRes = resFake();
+    await h({ method: "POST" }, okRes, { cors: () => {}, auth: async () => ({ email: "owner" }), check: async () => ({ ok: true, currentBalance: 5, checkedAt: "t" }) });
+    assert.strictEqual("diagnostic" in okRes.body, false);
   });
 
   await test("static: independent of the V3 adapter, no paid report, no apiUsage, secret bound on this function only", async () => {

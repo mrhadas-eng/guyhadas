@@ -72,6 +72,25 @@ const user = (token = "ID_TOKEN_123", calls?: { n: number }) => ({ getIdToken: a
   assert.strictEqual(r4.ok, false);
 }
 
+// diagnostic metadata on failure: only the six safe fields, query string dropped
+{
+  const calls: Call[] = [];
+  const r = await requestSemrushBalance(() => user(), mkFetch(502, { ok: false, error: "Semrush returned an unexpected response to the balance request.", checkedAt: "t", diagnostic: { httpStatus: 403, contentType: "text/html", redirected: true, finalPath: "https://www.semrush.com/login/?key=SECRET", responseFormat: "html", bodyLength: 12431, body: "<html>SECRET</html>" } }, calls), URL_);
+  assert.strictEqual(r.ok, false);
+  const d = (r as { diagnostic?: Record<string, unknown> }).diagnostic;
+  assert.deepStrictEqual(d, { httpStatus: 403, contentType: "text/html", redirected: true, finalPath: "https://www.semrush.com/login/", responseFormat: "html", bodyLength: 12431 });
+  assert.ok(!JSON.stringify(r).includes("SECRET"), "no key / body / query leaks to the UI");
+  const j = await requestSemrushBalance(() => user(), mkFetch(502, { ok: false, error: "x", checkedAt: "t", diagnostic: { httpStatus: 200, contentType: "application/json", redirected: false, finalPath: null, responseFormat: "json", bodyLength: 23 } }, calls), URL_);
+  assert.strictEqual((j as { diagnostic?: { responseFormat: string } }).diagnostic?.responseFormat, "json");
+  const bad = await requestSemrushBalance(() => user(), mkFetch(502, { ok: false, error: "x", checkedAt: "t", diagnostic: { responseFormat: "evil" } }, calls), URL_);
+  assert.strictEqual((bad as { diagnostic?: { responseFormat: string } }).diagnostic?.responseFormat, "unknown");
+  // success never carries a diagnostic
+  const ok = await requestSemrushBalance(() => user(), mkFetch(200, { ok: true, currentBalance: 7, checkedAt: "t", diagnostic: { httpStatus: 200 } }, calls), URL_);
+  assert.deepStrictEqual(ok, { ok: true, currentBalance: 7, checkedAt: "t" });
+  const page = readFileSync(new URL("../src/pages/business/SemrushBalanceCheck.tsx", import.meta.url), "utf8");
+  assert.ok(/פרטי אבחון/.test(page) && /result && !result\.ok/.test(page), "diagnostics shown only in the failure branch");
+}
+
 // no automatic invocation: the control calls getSemrushBalance only from the click handler
 {
   const src = readFileSync(new URL("../src/pages/business/SemrushBalanceCheck.tsx", import.meta.url), "utf8");
