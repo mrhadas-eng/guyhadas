@@ -233,6 +233,27 @@ async function recordUsageSafely(record) {
   }
 }
 
+// Safe, bounded provider error metadata for the ledger. Only typed scalar
+// fields an adapter put on its error are read; strings are bounded and
+// stripped of control characters and URL-with-query patterns.
+function boundedText(v, max) {
+  if (typeof v !== "string") return null;
+  const t = v.replace(/https?:\/\/\S*\?\S*/gi, "[url redacted]").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
+  return t || null;
+}
+function providerErrorFields(err) {
+  const e = err || {};
+  return {
+    providerHttpStatus: Number.isInteger(e.httpStatus) ? e.httpStatus : null,
+    providerErrorCode: boundedText(e.errorCode, 40),
+    providerRequestId: boundedText(e.requestId, 80),
+    providerRetryable: typeof e.retryable === "boolean" ? e.retryable : null,
+    providerContentType: boundedText(e.contentType, 80),
+    providerResponseFormat: boundedText(e.responseFormat, 10),
+    providerBodyLength: Number.isInteger(e.bodyLength) ? e.bodyLength : null
+  };
+}
+
 // The one entry point every governed provider call goes through.
 //
 //   provider, operation: keys into functions/apiLimits.js
@@ -361,6 +382,8 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
       estimatedUnits,
       // unknown unless the provider reported it (a failed call may be billed)
       providerUnitsUsed: u.providerUnitsUsed != null ? u.providerUnitsUsed : null,
+      // safe provider error metadata (adapters set these; never bodies or headers)
+      ...providerErrorFields(err),
       requestId: u.requestId || null,
       inputTokens: u.inputTokens != null ? u.inputTokens : null,
       outputTokens: u.outputTokens != null ? u.outputTokens : null,

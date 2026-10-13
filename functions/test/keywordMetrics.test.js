@@ -52,7 +52,8 @@ function fakeFetch(responses) {
     calls.push({ url, init });
     const r = queue.length > 1 ? queue.shift() : queue[0];
     if (r instanceof Error) throw r;
-    return { ok: r.status >= 200 && r.status < 300, status: r.status, text: async () => (typeof r.body === "string" ? r.body : JSON.stringify(r.body)) };
+    const h = Object.fromEntries(Object.entries(r.headers || {}).map(([k, v]) => [k.toLowerCase(), v]));
+    return { ok: r.status >= 200 && r.status < 300, status: r.status, headers: { get: (k) => h[String(k).toLowerCase()] ?? null }, text: async () => (typeof r.body === "string" ? r.body : JSON.stringify(r.body)) };
   };
   fn.calls = calls;
   return fn;
@@ -292,6 +293,77 @@ const ledger = (fake) => fake.rows("apiUsage").filter((r) => r.operation === "en
     assert.strictEqual(ledger(b.fake).length, 0, "validation failures never reach the governor");
   });
 
+  // ---------------- provider error diagnostics (403) ----------------
+  const leak = (obj) => {
+    const j = JSON.stringify(obj);
+    return j.includes(KEY) || /Apikey/i.test(j) || /authorization/i.test(j) || /[?&]key=/.test(j);
+  };
+
+  await test("D1 a 403 JSON provider error: providerCalled=true, safe metadata persisted, no secret, no retry", async () => {
+    const { fake, store, db } = await setup();
+    const f = fakeFetch({
+      status: 403,
+      headers: { "Content-Type": "application/json", "X-Request-Id": "hdr-1" },
+      body: { meta: { success: false, status_code: 403, request_id: "req-403" }, error: { code: "FORBIDDEN", message: `Access denied for key ${KEY}`, retryable: false } }
+    });
+    const r = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
+    assert.strictEqual(f.calls.length, 1, "no retry");
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.providerCalled, true);
+    assert.strictEqual(r.httpStatus, 403);
+    assert.strictEqual(r.errorCode, "FORBIDDEN");
+    assert.strictEqual(r.requestId, "req-403", "body request_id preferred over header");
+    assert.strictEqual(r.retryable, false);
+    assert.strictEqual(r.responseFormat, "json");
+    const row = ledger(fake).find((x) => x.status === "error");
+    assert.ok(row, "error row recorded");
+    assert.strictEqual(row.providerCalled, true);
+    assert.strictEqual(row.providerHttpStatus, 403);
+    assert.strictEqual(row.providerErrorCode, "FORBIDDEN");
+    assert.strictEqual(row.providerRequestId, "req-403");
+    assert.strictEqual(row.providerRetryable, false);
+    assert.strictEqual(row.providerContentType, "application/json");
+    assert.strictEqual(row.providerResponseFormat, "json");
+    assert.strictEqual(row.estimatedUnits, 20);
+    assert.strictEqual(row.providerUnitsUsed, null);
+    // NOTE: the provider's message is echoed into errorMessage only via safeText (bounded) -
+    // the key must never be persisted even if Semrush echoes it back.
+    assert.ok(!leak(fake.rows("apiUsage")), "no secret in apiUsage");
+    assert.ok(!leak(r), "no secret in the store result");
+    assert.strictEqual((await db.collection("keywords").doc("k1").get()).data().marketDemand, undefined);
+  });
+
+  await test("D2 a 403 HTML/edge page: format, content type, length and a header request id; no body persisted", async () => {
+    const { fake, store } = await setup();
+    const html = "<!DOCTYPE html><html><body>Access denied secret-body-marker</body></html>";
+    const f = fakeFetch({ status: 403, headers: { "content-type": "text/html; charset=UTF-8", "cf-ray": "8abc123-TLV" }, body: html });
+    const r = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
+    assert.strictEqual(f.calls.length, 1);
+    assert.strictEqual(r.httpStatus, 403);
+    assert.strictEqual(r.errorCode, null);
+    assert.strictEqual(r.retryable, null);
+    assert.strictEqual(r.requestId, "cf-ray:8abc123-TLV");
+    assert.strictEqual(r.responseFormat, "html");
+    assert.strictEqual(r.bodyLength, html.length);
+    const row = ledger(fake).find((x) => x.status === "error");
+    assert.strictEqual(row.providerHttpStatus, 403);
+    assert.strictEqual(row.providerRequestId, "cf-ray:8abc123-TLV");
+    assert.strictEqual(row.providerResponseFormat, "html");
+    assert.strictEqual(row.providerContentType, "text/html; charset=UTF-8");
+    assert.strictEqual(row.providerBodyLength, html.length);
+    assert.ok(!JSON.stringify(fake.rows("apiUsage")).includes("secret-body-marker"), "raw body never persisted");
+    assert.ok(!leak(fake.rows("apiUsage")));
+  });
+
+  await test("D3 the 403 is not retried later automatically: a second click is quota-blocked, not re-sent", async () => {
+    const { store } = await setup();
+    const f = fakeFetch({ status: 403, body: { meta: { success: false }, error: { code: "FORBIDDEN", message: "denied", retryable: true } } });
+    await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
+    const r2 = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
+    assert.strictEqual(r2.blockedReason, "blocked_by_quota");
+    assert.strictEqual(f.calls.length, 1, "retryable:true still not retried");
+  });
+
   // ---------------- endpoint guards ----------------
   const { handleEnrichRequest } = loadWithFake(createFakeFirestore(), path.join(__dirname, "..", "keywordMetrics.js"), {
     [path.join(__dirname, "..", "visibility.js")]: { setCors: () => {}, requireAdmin: async () => ({ uid: "admin" }) }
@@ -326,6 +398,21 @@ const ledger = (fake) => fake.rows("apiUsage").filter((r) => r.operation === "en
     await handleEnrichRequest({ method: "GET", body: {} }, res, { auth: okAuth, enrich, cors: () => {} });
     assert.strictEqual(res.code, 405);
     assert.strictEqual(called, 0);
+  });
+
+  await test("E4 failed call: endpoint returns the safe diagnostic fields, bounded message, nothing else", async () => {
+    const res = fakeRes();
+    await handleEnrichRequest({ method: "POST", body: { businessId: BIZ, topicId: "t1", query: "q", confirmPaidCall: true } }, res, {
+      auth: okAuth,
+      cors: () => {},
+      enrich: async () => ({ ok: false, status: 502, error: "x".repeat(2000), providerCalled: true, httpStatus: 403, errorCode: "FORBIDDEN", requestId: "req-403", retryable: false, responseFormat: "json", contentType: "application/json", bodyLength: 120, estimatedUnits: 20, providerUnitsUsed: null, rawBody: "nope", apiKey: KEY })
+    });
+    assert.strictEqual(res.code, 502);
+    assert.strictEqual(res.body.success, false);
+    assert.ok(res.body.error.length <= 400);
+    for (const [k, v] of Object.entries({ httpStatus: 403, errorCode: "FORBIDDEN", requestId: "req-403", retryable: false, providerCalled: true, responseFormat: "json" })) assert.strictEqual(res.body[k], v, k);
+    assert.strictEqual(res.body.rawBody, undefined);
+    assert.strictEqual(res.body.apiKey, undefined);
   });
 
   await test("E3 confirmed single query -> one enrichment invocation, whitelisted fields only", async () => {

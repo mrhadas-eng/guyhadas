@@ -12,7 +12,7 @@ const { setCors, requireAdmin } = require("./visibility");
 const { enrichKeywordMetrics } = require("./keywordMetricsStore");
 
 const RESULT_FIELDS = ["keywordId", "topicId", "query", "country", "month", "marketDemand", "cacheHit", "cacheDecision", "providerCalled", "providerUnitsUsed", "estimatedUnits", "stored"];
-const ERROR_FIELDS = ["blockedReason", "cacheDecision", "providerCalled", "providerUnitsUsed", "estimatedUnits", "errorCode", "httpStatus"];
+const ERROR_FIELDS = ["blockedReason", "cacheDecision", "providerCalled", "providerUnitsUsed", "estimatedUnits", "errorCode", "httpStatus", "requestId", "retryable", "contentType", "responseFormat", "bodyLength"];
 
 function pick(obj, keys) {
   const out = {};
@@ -45,7 +45,7 @@ async function handleEnrichRequest(req, res, { auth = requireAdmin, enrich = enr
   try {
     const r = await enrich({ businessId: body.businessId, topicId: body.topicId, query: body.query, country: body.country || "IL" });
     if (!r.ok) {
-      res.status(r.status || 500).json({ success: false, error: r.error, ...pick(r, ERROR_FIELDS) });
+      res.status(r.status || 500).json({ success: false, error: String(r.error || "error").slice(0, 400), ...pick(r, ERROR_FIELDS) });
       return;
     }
     res.status(200).json({ success: true, ...pick(r, RESULT_FIELDS) });
