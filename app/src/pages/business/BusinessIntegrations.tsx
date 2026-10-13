@@ -143,7 +143,7 @@ export default function BusinessIntegrations() {
         </table>
       </div>
       <p className="text-dim" style={{ fontSize: "0.8rem", marginTop: 12 }}>
-        Semrush ממתין להקצאת יחידות API בחשבון הקיים. OpenAI / Anthropic / xAI / n8n יתווספו בהמשך.
+        Semrush V4 מחובר. ניתן לבדוק את יתרת יחידות ה-API באמצעות הכפתור למטה. OpenAI / Anthropic / xAI / n8n יתווספו בהמשך.
       </p>
 
       <SemrushBalanceCheck />
