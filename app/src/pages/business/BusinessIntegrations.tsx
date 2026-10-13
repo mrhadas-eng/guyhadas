@@ -1,8 +1,11 @@
 import { useEffect, useState } from "react";
+import SemrushBalanceCheck from "./SemrushBalanceCheck";
 import { useOutletContext } from "react-router-dom";
 import { StatusBadge } from "../../components/StatusBadge";
 import { ConnectIntegrationModal } from "../../components/ConnectIntegrationModal";
-import { listenIntegrations } from "../../lib/firestore";
+import { listenIntegrations, listenLatestSemrushBalanceSnapshot } from "../../lib/firestore";
+import { deriveSemrushStatus, SEMRUSH_STATUS_CLASS, SEMRUSH_STATUS_LABELS } from "../../lib/semrushStatus";
+import type { SemrushBalanceResult } from "../../lib/semrushBalance";
 import { disconnectIntegration, syncGa4, syncSearchConsole } from "../../lib/functions";
 import { INTEGRATION_LABELS } from "../../types";
 import type { Integration, IntegrationProvider } from "../../types";
@@ -14,9 +17,10 @@ import type { BusinessContext } from "./BusinessWorkspace";
 const ALL_PROVIDERS: IntegrationProvider[] = ["ga4", "search_console", "semrush", "openai", "anthropic", "xai", "n8n"];
 
 // GA4 and Search Console connect through the dedicated Visibility OS
-// service account (Milestone 2) - everything else is still a future
-// milestone (Semrush is waiting on API units; the AI providers/n8n aren't
-// wired up yet at all).
+// service account (Milestone 2). Semrush is ACCOUNT-level: its status comes
+// from the free balance check evidence (semrushBalanceSnapshots + a check
+// made in this session), not from a per-business integrations record. The
+// AI providers / n8n aren't wired up yet.
 const GOOGLE_PROVIDERS: IntegrationProvider[] = ["ga4", "search_console"];
 
 function formatTimestamp(value: unknown): string | null {
@@ -32,14 +36,21 @@ export default function BusinessIntegrations() {
   const [busyProvider, setBusyProvider] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  const [semrushSnapshot, setSemrushSnapshot] = useState<{ checkedAt: string } | null>(null);
+  const [semrushSession, setSemrushSession] = useState<SemrushBalanceResult | null>(null);
+
   useEffect(() => {
     if (!business) return;
     return listenIntegrations(business.id, setIntegrations);
   }, [business]);
 
+  // Account-level Semrush evidence (Firestore read only - no function call).
+  useEffect(() => listenLatestSemrushBalanceSnapshot(setSemrushSnapshot), []);
+
   if (!business) return <div className="loading-row">טוען…</div>;
 
   const byProvider = new Map((integrations || []).map((i) => [i.provider, i]));
+  const semrushStatus = deriveSemrushStatus(semrushSnapshot, semrushSession);
 
   async function handleSync(provider: "ga4" | "search_console") {
     if (!business) return;
@@ -95,7 +106,11 @@ export default function BusinessIntegrations() {
                 <tr key={provider}>
                   <td>{INTEGRATION_LABELS[provider]}</td>
                   <td>
-                    <StatusBadge status={status} />
+                    {provider === "semrush" ? (
+                      <span className={`status-badge ${SEMRUSH_STATUS_CLASS[semrushStatus.status]}`}>{SEMRUSH_STATUS_LABELS[semrushStatus.status]}</span>
+                    ) : (
+                      <StatusBadge status={status} />
+                    )}
                     {status === "error" && integ?.errorMessage && (
                       <div className="text-dim" style={{ fontSize: "0.75rem", marginTop: 4, maxWidth: 260 }}>
                         {integ.errorMessage}
@@ -103,7 +118,7 @@ export default function BusinessIntegrations() {
                     )}
                   </td>
                   <td className="text-muted">{integ?.propertyLabel || "—"}</td>
-                  <td className="text-muted">{lastSynced || "—"}</td>
+                  <td className="text-muted">{provider === "semrush" ? (semrushStatus.checkedAt ? new Date(semrushStatus.checkedAt).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" }) : "—") : lastSynced || "—"}</td>
                   <td>
                     {isGoogle && (status === "not_connected" || status === "error") && (
                       <button
@@ -142,8 +157,10 @@ export default function BusinessIntegrations() {
         </table>
       </div>
       <p className="text-dim" style={{ fontSize: "0.8rem", marginTop: 12 }}>
-        Semrush ממתין להקצאת יחידות API בחשבון הקיים. OpenAI / Anthropic / xAI / n8n יתווספו בהמשך.
+        Semrush V4 מחובר. ניתן לבדוק את יתרת יחידות ה-API באמצעות הכפתור למטה. OpenAI / Anthropic / xAI / n8n יתווספו בהמשך.
       </p>
+
+      <SemrushBalanceCheck onResult={setSemrushSession} />
 
       {connectModalProvider && (
         <ConnectIntegrationModal

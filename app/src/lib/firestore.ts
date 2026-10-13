@@ -527,3 +527,18 @@ export async function updateChangeEventNotes(id: string, implementationNotes: st
 export async function releaseExperimentHold(id: string, note: string) {
   return updateDoc(doc(db, "seoExperiments", id), { ownerHoldRelease: { released: true, note, atMs: Date.now() }, updatedAt: serverTimestamp() });
 }
+
+// --- Semrush account-level balance evidence (semrushBalanceSnapshots) ---
+// Account-level: NOT filtered by business. Latest successful balance check only.
+export function listenLatestSemrushBalanceSnapshot(cb: (snap: { checkedAt: string; balance: number } | null) => void): Unsubscribe {
+  const q = query(collection(db, "semrushBalanceSnapshots"), orderBy("checkedAt", "desc"), limit(1));
+  return onSnapshot(
+    q,
+    (s) => {
+      const d = s.docs[0];
+      cb(d ? (d.data() as { checkedAt: string; balance: number }) : null);
+    },
+    // e.g. rules not deployed yet: treat as "no evidence" (לא נבדק), never as connected
+    () => cb(null)
+  );
+}
