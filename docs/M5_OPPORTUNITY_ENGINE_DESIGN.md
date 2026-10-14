@@ -152,7 +152,7 @@ Ordinal levels 0–3 per factor; `null` = unknown (excluded from the score, lowe
 |---|---|---|
 | `businessRelevance` | owner status priority / brand_strategic = 3; relevant = 2; +1 (max 3) if linked to a confirmed service; site-level = 2 | observed (owner) |
 | `commercialValue` | preliminary intent commercial / local or commercial modifier = 3; navigational = 2; informational = 1; unclassified = null | inference |
-| `marketDemand` | Semrush monthly volume tier relative to this business's approved topics, **only when Semrush evidence exists**; otherwise `null` (unknown — excluded from the score, lowers confidence). Never derived from Search Console | observed / unknown |
+| `marketDemand` | Demand-provider (Semrush today) monthly volume tier relative to this business's approved topics. It is tiered **only when evidence exists** and **at least 4 approved topics have positive demand** (`THRESHOLDS.minDemandTierSample`, see §9b). With fewer, the value is kept but left untiered: `null`, basis `insufficient_sample`. With no evidence it is `null` (unknown). Both are excluded from the score and lower confidence. Never derived from Search Console | observed / insufficient_sample / unknown |
 | `observedVisibility` | Search Console impressions tier relative to this business's approved topics (no impressions observed = 0). Scored only where existing visibility is the value at stake (ranking / CTR / overlap, and page findings on pages observed for a topic). For coverage gaps and pages without visibility it is **not applicable**: the missing visibility is the reason for the opportunity, not evidence of low value | observed |
 | `upside` | type-specific: blocker on a visible page = 3; position 4–10 = 3, 11–20 = 2; CTR < 50 % of site CTR = 3; coverage gap = 2; … | observed + assumption (position tiers) |
 | `effortInverse` | technical / CTR / internal links = 3 (small), ranking/content/entity = 2, new page / overlap review = 1 | assumption |
@@ -181,6 +181,31 @@ Rules:
 - Wording follows the evidence: "no visibility in Search Console for the topic's queries during {period}" — never "the page does not appear in Google" or "is not indexed" without direct evidence.
 
 This split was made in review of PR #31 (config version 2). Priorities on the reference fixture were unchanged by it; scores moved, and confidence dropped to medium wherever market demand is unknown.
+
+## 9b. Minimum sample for relative demand tiers (#55, config version 3)
+
+**Problem.** Market demand is tiered by terciles of the positive volumes of the approved topics, with cut points at indexes ⌊(n−1)/3⌋ and ⌊2(n−1)/3⌋.
+- With 1 or 2 enriched topics, both cut points are the smallest value, so **every** enriched topic was tier 3 ("high demand"), whatever its absolute volume.
+- With 3, the smallest was tier 2 and the rest tier 3.
+- 4 is the smallest sample whose cut points can separate all three tiers.
+
+**Rule.** The demand factor is tiered only when at least `minDemandTierSample` (4) approved topics have a positive demand value. This is a sample-size rule (ASSUMPTION), not an absolute search-volume threshold, and it doesn't refer to any specific provider.
+
+Below the minimum:
+- a positive value gets `level: null` and `basis: "insufficient_sample"`, with the volume and the sample size in the explanation (e.g. "1300 חיפושים בחודש … לא דורג: יש נתוני ביקוש רק ל-1 נושאים מאושרים, ונדרשים לפחות 4");
+- the signal keeps `source` and adds `tierStatus: "insufficient_sample"`;
+- `missing` gets `factor_untiered_insufficient_sample:marketDemand`, which is distinct from `factor_unknown:marketDemand`;
+- confidence drops one step, exactly as for unknown demand, with its own reason ("יש נתון אך אין מספיק נושאים להשוואה");
+- the factor is withheld from the score, and demand-dependent kinds are capped at medium (same mechanics as unknown);
+- it is **never** shown as low or high demand;
+- a reported 0 stays level 0, as before.
+
+**Unchanged.**
+- At or above the minimum, tiers are identical to the previous rule (test DT4 compares against the old tercile function).
+- The topic-intelligence demand value and its provenance are untouched; only the derived tier changes.
+- M6 uses its own absolute demand sum and is unaffected.
+
+**Known similar case, not changed here:** the Search Console visibility tier (`imprT`) uses the same terciles and has the same sparse-sample behaviour.
 
 ## 10. Relationship to the M4 baseline
 

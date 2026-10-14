@@ -82,7 +82,11 @@ function buildContext({ business, run, topicIntel, searchTopics, seoPages, basel
   const gscImpr = approvedIntel.map((ti) => (ti.gscCurrent && ti.gscCurrent.status === "available" ? ti.gscCurrent.impressions || 0 : ti.gscCurrent && ti.gscCurrent.status === "no_observation" ? 0 : null));
   const semVol = approvedIntel.map((ti) => (ti.semrush && ti.semrush.status === "available" ? ti.semrush.totalMonthlyVolume || 0 : null));
   const imprT = terciles(gscImpr.filter((x) => x != null));
-  const volT = terciles(semVol.filter((x) => x != null));
+  // #55: relative demand tiers need a minimum number of topics with positive
+  // demand; below it no tiers are derived (values stay, tiers are withheld).
+  const demandSample = semVol.filter((x) => x != null && x > 0).length;
+  const demandTiered = demandSample >= THRESHOLDS.minDemandTierSample;
+  const volT = demandTiered ? terciles(semVol.filter((x) => x != null)) : null;
   const minImpr = Math.max(THRESHOLDS.minImpressionsAbsolute, imprT ? imprT.low : 0);
   const sc = run && run.businessContext && run.businessContext.searchConsole;
   const siteCtr = sc && sc.status === "available" && sc.impressions > 0 ? sc.clicks / sc.impressions : null;
@@ -95,6 +99,8 @@ function buildContext({ business, run, topicIntel, searchTopics, seoPages, basel
     pagesByKey,
     imprT,
     volT,
+    demandSample,
+    demandTiered,
     minImpr,
     siteCtr,
     gscPeriod: run && run.gsc ? run.gsc.period : null
@@ -128,8 +134,20 @@ function commercialOf(ti) {
 // this site and large demand in the market. Unknown when unavailable.
 function marketDemandOf(ti, ctx) {
   const sem = ti.semrush && ti.semrush.status === "available" ? ti.semrush.totalMonthlyVolume : null;
-  if (sem == null) return { level: null, basis: "unknown", source: null, explanation: "ביקוש בשוק לא ידוע — אין נתוני Semrush (נתוני Search Console משקפים נראות של האתר, לא ביקוש בשוק)" };
-  return { level: tierLevel(sem, ctx.volT), basis: "observed", source: "semrush", explanation: `${sem} חיפושים בחודש לפי Semrush (סכום השאילתות; ביחס לשאר הנושאים שלך)` };
+  if (sem == null) return { level: null, basis: "unknown", source: null, tierStatus: "unknown", explanation: "ביקוש בשוק לא ידוע — אין נתוני Semrush (נתוני Search Console משקפים נראות של האתר, לא ביקוש בשוק)" };
+  // #55: a positive value with too few comparable topics is kept but not
+  // tiered - "insufficient evidence to tier" is neither low nor high demand.
+  // (A reported 0 stays level 0 as before: it is not a relative judgement.)
+  if (sem > 0 && !ctx.demandTiered) {
+    return {
+      level: null,
+      basis: "insufficient_sample",
+      source: "semrush",
+      tierStatus: "insufficient_sample",
+      explanation: `${sem} חיפושים בחודש לפי Semrush (סכום השאילתות) — לא דורג: יש נתוני ביקוש רק ל-${ctx.demandSample} נושאים מאושרים, ונדרשים לפחות ${THRESHOLDS.minDemandTierSample} כדי להשוות ביניהם`
+    };
+  }
+  return { level: tierLevel(sem, ctx.volT), basis: "observed", source: "semrush", tierStatus: "tiered", explanation: `${sem} חיפושים בחודש לפי Semrush (סכום השאילתות; ביחס לשאר הנושאים שלך)` };
 }
 
 // OBSERVED VISIBILITY: what Search Console measured for this business in the
@@ -169,17 +187,18 @@ function band(type, s, confidence = "high") {
   return p;
 }
 
-function confidenceOf({ gscAvailable, unknownFactors, inferredTarget, uncrawledTarget, hasBaseline, assumptionBenefit }) {
+function confidenceOf({ gscAvailable, unknownFactors, untieredFactors = [], inferredTarget, uncrawledTarget, hasBaseline, assumptionBenefit }) {
   let level = 3;
   const reasons = [];
   if (gscAvailable === false) {
     level--;
     reasons.push("אין נתוני Search Console עדכניים לנושא");
   }
-  if (unknownFactors.length) {
-    level--;
-    reasons.push(`לא ידוע: ${unknownFactors.map((k) => FACTOR_NAMES[k] || k).join(", ")}`);
-  }
+  // An untiered factor is withheld from the score exactly like an unknown one
+  // (one confidence step for both together), but is explained differently.
+  if (unknownFactors.length || untieredFactors.length) level--;
+  if (unknownFactors.length) reasons.push(`לא ידוע: ${unknownFactors.map((k) => FACTOR_NAMES[k] || k).join(", ")}`);
+  if (untieredFactors.length) reasons.push(`יש נתון אך אין מספיק נושאים להשוואה: ${untieredFactors.map((k) => FACTOR_NAMES[k] || k).join(", ")}`);
   if (inferredTarget) {
     level--;
     reasons.push("הדף המשויך נמצא לפי תוכן (הסקה), לא לפי נתוני Search Console");
@@ -252,16 +271,18 @@ function detect(input, weights) {
 
   function finish(o) {
     const s = score(o.factors);
-    const unknown = o.factors.filter((f) => f.level == null && !f.notApplicable).map((f) => f.key);
-    const conf = confidenceOf({ ...o.conf, unknownFactors: unknown, hasBaseline });
+    const untiered = o.factors.filter((f) => f.level == null && f.basis === "insufficient_sample").map((f) => f.key);
+    const unknown = o.factors.filter((f) => f.level == null && !f.notApplicable && f.basis !== "insufficient_sample").map((f) => f.key);
+    const conf = confidenceOf({ ...o.conf, unknownFactors: unknown, untieredFactors: untiered, hasBaseline });
     let priority = band(o.type, s, conf.confidence);
-    // Unknown market demand must not inflate an opportunity whose case rests
-    // on demand (it is excluded from the score, so cap the band instead).
+    // Unknown OR untiered (#55) market demand must not inflate an opportunity
+    // whose case rests on demand (it is excluded from the score, so cap the
+    // band instead).
     const md = o.factors.find((f) => f.key === "marketDemand");
     if (DEMAND_DEPENDENT.has(o.type) && md && md.level == null && priority === "high") priority = "medium";
     const valueFactors = o.factors.filter((f) => ["businessRelevance", "marketDemand", "observedVisibility", "upside"].includes(f.key) && f.level != null);
     const valueLevel = valueFactors.length ? Math.round(valueFactors.reduce((a, f) => a + f.level, 0) / valueFactors.length) : null;
-    const missing = [...new Set([...(o.missing || []), ...unknown.map((k) => `factor_unknown:${k}`), ...(hasBaseline ? [] : ["no_baseline"])])];
+    const missing = [...new Set([...(o.missing || []), ...unknown.map((k) => `factor_unknown:${k}`), ...untiered.map((k) => `factor_untiered_insufficient_sample:${k}`), ...(hasBaseline ? [] : ["no_baseline"])])];
     delete o.conf;
     return {
       ...o,
@@ -556,7 +577,14 @@ function detect(input, weights) {
       commercialValue: sig("commercialValue"),
       // External market demand (unknown without a demand provider) and
       // Search Console visibility are separate signals - never merged.
-      marketDemand: f.marketDemand ? { level: f.marketDemand.level, basis: f.marketDemand.basis, source: f.marketDemand.level == null ? null : "semrush" } : null,
+      marketDemand: f.marketDemand
+        ? {
+            level: f.marketDemand.level,
+            basis: f.marketDemand.basis,
+            source: f.marketDemand.level != null || f.marketDemand.basis === "insufficient_sample" ? "semrush" : null,
+            tierStatus: f.marketDemand.basis === "insufficient_sample" ? "insufficient_sample" : f.marketDemand.basis === "not_applicable" ? "not_applicable" : f.marketDemand.level == null ? "unknown" : "tiered"
+          }
+        : null,
       visibility: o.impactInputs && o.impactInputs.current ? { ...o.impactInputs.current, level: f.observedVisibility ? f.observedVisibility.level : null, basis: "observed", source: "search_console" } : null,
       technical: (o.signalExtra && o.signalExtra.technical) || null,
       content: o.type === "coverage_gap" || o.type === "page_not_visible" ? { level: 2, basis: "inference" } : null,

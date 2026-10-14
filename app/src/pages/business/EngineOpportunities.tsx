@@ -44,7 +44,7 @@ const FACTOR_LABELS: Record<string, string> = {
   upside: "פוטנציאל שיפור",
   effortInverse: "קלות ביצוע"
 };
-const BASIS_LABELS: Record<string, string> = { observed: "נמדד", inference: "הסקה", assumption: "הנחה", hypothesis: "השערה", unknown: "לא ידוע", not_applicable: "לא רלוונטי" };
+const BASIS_LABELS: Record<string, string> = { observed: "נמדד", inference: "הסקה", assumption: "הנחה", hypothesis: "השערה", unknown: "לא ידוע", not_applicable: "לא רלוונטי", insufficient_sample: "לא דורג — מעט נושאים להשוואה" };
 const PRIORITY: Record<string, { tone: StatusTone; text: string }> = { high: { tone: "bad", text: "גבוהה" }, medium: { tone: "warn", text: "בינונית" }, low: { tone: "neutral", text: "נמוכה" } };
 const CONF: Record<string, string> = { high: "גבוה", medium: "בינוני", low: "נמוך" };
 const OUTCOME_LABELS: Record<string, string> = { NO_ACTION: "אין צורך בפעולה", WAIT_FOR_DATA: "ממתין לנתונים" };
