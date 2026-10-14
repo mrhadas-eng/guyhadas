@@ -104,6 +104,7 @@ function createFakeFirestore({ indexes } = {}) {
           const v = d.data[f.field];
           if (f.op === "==") return v === f.value;
           if (f.op === ">=") return v >= f.value;
+          if (f.op === "<") return v < f.value;
           throw new Error(`fakeFirestore: operator ${f.op} not supported`);
         })
       );

@@ -113,13 +113,15 @@ function reachedProvider(row) {
   return row.status === "success" || row.status === "error"; // rows written before providerCalled existed
 }
 
-async function sumUsage({ provider, operation, businessId, sinceMs }) {
+async function sumUsage({ provider, operation, businessId, sinceMs, untilMs = null }) {
   const db = admin.firestore();
   let query = db
     .collection("apiUsage")
     .where("provider", "==", provider)
     .where("operation", "==", operation)
     .where("retrievedAtMs", ">=", sinceMs);
+  // same field as the lower bound, so the existing composite index serves it
+  if (untilMs != null) query = query.where("retrievedAtMs", "<", untilMs);
   if (businessId) query = query.where("businessId", "==", businessId);
   const snap = await query.get();
   const real = snap.docs.map((d) => d.data()).filter(reachedProvider);
@@ -129,10 +131,60 @@ async function sumUsage({ provider, operation, businessId, sinceMs }) {
   };
 }
 
-async function checkBudget({ provider, operation, businessId, estimatedCostUsd, limits }) {
-  const now = Date.now();
-  const dayStart = now - 24 * 60 * 60 * 1000;
-  const monthStart = now - 30 * 24 * 60 * 60 * 1000;
+// --- daily quota window ------------------------------------------------------
+// Default (every operation without `dailyWindow`): "PerDay" = rolling 24 h.
+// An operation can declare `dailyWindow: { type: "calendar_day", timeZone }`
+// in apiLimits.js: "PerDay" then means the CALENDAR DAY in that IANA time
+// zone, [local 00:00:00, next local 00:00:00), computed with Intl - never
+// from the server's own time zone. DST days are simply 23 or 25 hours long
+// (Israel changes clocks at 02:00, so local midnight always exists).
+
+function zonedParts(ms, timeZone) {
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const p = {};
+  for (const { type, value } of fmt.formatToParts(new Date(ms))) if (type !== "literal") p[type] = Number(value);
+  return p;
+}
+
+// Offset of `timeZone` from UTC at instant ms (local wall clock - UTC).
+function zoneOffsetMs(ms, timeZone) {
+  const p = zonedParts(ms, timeZone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(ms / 1000) * 1000;
+}
+
+// UTC instant of local 00:00:00 on (year, month, day) in timeZone.
+function zonedMidnightMs(year, month, day, timeZone) {
+  const wall = Date.UTC(year, month - 1, day);
+  let t = wall - zoneOffsetMs(wall, timeZone);
+  t = wall - zoneOffsetMs(t, timeZone); // second pass settles a DST change between the guess and the answer
+  return t;
+}
+
+// [startMs, endMs) of the calendar day containing nowMs in timeZone.
+function calendarDayWindow(nowMs, timeZone) {
+  const p = zonedParts(nowMs, timeZone);
+  const startMs = zonedMidnightMs(p.year, p.month, p.day, timeZone);
+  const next = new Date(Date.UTC(p.year, p.month - 1, p.day + 1));
+  const endMs = zonedMidnightMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), timeZone);
+  if (!(startMs <= nowMs && nowMs < endMs)) throw new Error(`calendar-day window for ${timeZone} could not be determined`);
+  return { startMs, endMs };
+}
+
+function dailyWindowFor(limits, nowMs) {
+  const w = limits.dailyWindow;
+  if (w && w.type === "calendar_day") {
+    if (!w.timeZone) throw new Error("dailyWindow.calendar_day requires a timeZone");
+    const { startMs, endMs } = calendarDayWindow(nowMs, w.timeZone);
+    return { sinceMs: startMs, untilMs: endMs, label: `today (calendar day, ${w.timeZone})` };
+  }
+  return { sinceMs: nowMs - 24 * 60 * 60 * 1000, untilMs: null, label: "today" };
+}
+
+async function checkBudget({ provider, operation, businessId, estimatedCostUsd, limits, nowMs = Date.now() }) {
+  const now = nowMs;
+  // throws on a bad time zone -> caught by runGoverned -> fail closed
+  const day = dailyWindowFor(limits, now);
+  const monthStart = now - 30 * 24 * 60 * 60 * 1000; // rolling 30 days (unchanged)
 
   if (limits.maxEstimatedCostPerCallUsd != null && estimatedCostUsd != null && estimatedCostUsd > limits.maxEstimatedCostPerCallUsd) {
     return {
@@ -143,9 +195,9 @@ async function checkBudget({ provider, operation, businessId, estimatedCostUsd, 
   }
 
   const checks = [
-    ["maxRequestsPerBusinessPerDay", () => sumUsage({ provider, operation, businessId, sinceMs: dayStart }), "today"],
+    ["maxRequestsPerBusinessPerDay", () => sumUsage({ provider, operation, businessId, sinceMs: day.sinceMs, untilMs: day.untilMs }), day.label],
     ["maxRequestsPerBusinessPerMonth", () => sumUsage({ provider, operation, businessId, sinceMs: monthStart }), "this month"],
-    ["maxRequestsGlobalPerDay", () => sumUsage({ provider, operation, sinceMs: dayStart }), "today (all businesses)"],
+    ["maxRequestsGlobalPerDay", () => sumUsage({ provider, operation, sinceMs: day.sinceMs, untilMs: day.untilMs }), `${day.label} (all businesses)`],
     ["maxRequestsGlobalPerMonth", () => sumUsage({ provider, operation, sinceMs: monthStart }), "this month (all businesses)"]
   ].filter(([key]) => limits[key] != null);
 
@@ -276,7 +328,7 @@ function providerErrorFields(err) {
 // decision: "cache_hit" | "cache_miss" | "forced_refresh" |
 //           "blocked_cache_unavailable" | "blocked_safety_check_unavailable" |
 //           "blocked_by_budget" | "blocked_by_quota" | "blocked_by_safety_limit"
-async function runGoverned({ provider, operation, businessId, input, model = null, analysisVersion = null, forceRefresh = false, reason = null, estimateCost, estimateUnits, execute }) {
+async function runGoverned({ provider, operation, businessId, input, model = null, analysisVersion = null, forceRefresh = false, reason = null, estimateCost, estimateUnits, execute, nowMs }) {
   if (!businessId) throw new Error("runGoverned requires a businessId - every provider call in this app is business-scoped");
   const limits = getLimits(provider, operation);
   const inputHash = hashInput(input);
@@ -331,7 +383,8 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
         return outcome({ decision: "blocked_by_budget", blocked: { reason: "blocked_by_budget", message } });
       }
     }
-    const budget = await checkBudget({ provider, operation, businessId, estimatedCostUsd, limits });
+    // nowMs: only for the quota windows (tests pin the clock); defaults to the real clock
+    const budget = await checkBudget({ provider, operation, businessId, estimatedCostUsd, limits, nowMs: nowMs != null ? nowMs : Date.now() });
     if (!budget.allowed) {
       await recordUsageSafely({ ...base, status: budget.reason, decision: budget.reason, errorMessage: budget.message, estimatedCostUsd, estimatedUnits });
       return outcome({ decision: budget.reason, blocked: { reason: budget.reason, message: budget.message } });
@@ -394,4 +447,4 @@ async function runGoverned({ provider, operation, businessId, input, model = nul
   }
 }
 
-module.exports = { hashInput, runGoverned };
+module.exports = { hashInput, runGoverned, calendarDayWindow, dailyWindowFor };
