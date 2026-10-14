@@ -86,16 +86,20 @@ module.exports = {
     // (developer.semrush.com "Get keyword metrics", verified 2026-10-13).
     // maxEstimatedUnitsPerCall is a HARD cap enforced by the governor before
     // the call (runGoverned refuses when the unit estimate is missing or
-    // above it). Pilot limits are deliberately tiny; raise them only after
-    // the pilot has been evaluated. A failed provider call counts toward
-    // the quota (it may have been billed).
+    // above it). A failed provider call counts toward the quota (it may
+    // have been billed).
+    // Owner-authorized pilot quota (2026-10-14): up to 5 provider attempts
+    // per business per ROLLING 24 hours (the governor's "PerDay" window is
+    // now - 24 h, not a calendar day - see #59), 5 globally per rolling
+    // 24 h, and 25 per business / 25 globally per rolling 30 days. At
+    // 20 units each that is at most 100 units/day and 500 units/30 days.
     enrichKeywordMetrics: {
       unitsPerRequest: 20,
       maxEstimatedUnitsPerCall: 20,
-      maxRequestsPerBusinessPerDay: 1,
-      maxRequestsPerBusinessPerMonth: 5,
-      maxRequestsGlobalPerDay: 2,
-      maxRequestsGlobalPerMonth: 10,
+      maxRequestsPerBusinessPerDay: 5, // rolling 24 h
+      maxRequestsPerBusinessPerMonth: 25, // rolling 30 days
+      maxRequestsGlobalPerDay: 5, // rolling 24 h
+      maxRequestsGlobalPerMonth: 25, // rolling 30 days
       // The cache identity includes the month, so a cached answer is reused
       // for the rest of that month and a new month is a new identity.
       cacheTtlMs: 31 * 24 * 60 * 60 * 1000,
