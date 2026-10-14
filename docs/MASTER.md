@@ -385,6 +385,8 @@ Sources may include:
 
 Search volume is evidence, not strategy.
 
+**Clarification (2026-10-14, §33.1).** These sources do not play equal roles. The Search Universe is **generated** from Business Knowledge, the owner-approved Service / Offer Map, its facets, GSC evidence, internal AI/research candidate generation and owner input/validation. Semrush, and any other demand provider, is an **evidence / enrichment provider**. It never generates the Search Universe, and it never decides relevance, commercial intent, service classification or membership.
+
 GSC represents actual current visibility, not the complete market universe.
 
 ---
@@ -1200,6 +1202,58 @@ Evidence / Intelligence layer
 Opportunity / Decision layer
 ```
 
+## 33.1 Search-demand providers are evidence, not the Search Universe generator (decision, 2026-10-14)
+
+**Status: decided by the owner on 2026-10-14, after a controlled Semrush MCP capability evaluation.** Implementation note: `docs/SEMRUSH_MCP_ADAPTER_NOTE.md`; backlog #62. No Semrush MCP integration exists yet.
+
+### Evidence (controlled Semrush MCP tests, database `il`, 2026-10-14; 2,710 API units in total)
+
+| Report | Seed | Result | Units |
+|---|---|---|---|
+| `phrase_this` (single keyword) | "אדריכלות בתל אביב" | Real data: volume 50, CPC 2.27, competition 0.23, 12-month trend. KD 0, intent empty. | 10 |
+| `phrase_fullsearch` (broad match) | "אדריכלות בתל אביב" | 35 variations. 8 of 35 relevant to hiring an architect; 4 of 35 with non-zero volume. The majority were education, tourism/heritage, crossword or other noise. | 700 (20 per row) |
+| `phrase_related` (semantic related) | "אדריכלות בתל אביב" | `ERROR 50 :: NOTHING FOUND` | none reported |
+| `phrase_questions` | "אדריכלות" | 50 rows. 0 of 50 commercially relevant (mostly architecture education/career). KD 0 and intent empty throughout; trend histories often incomplete (3–4 points); volumes appear bucketed (20/30). | 2,000 (40 per row) |
+
+These are observations from one market (Hebrew / IL) and one business domain on one date. Like every external fact (§46), they are re-verified before being relied on elsewhere.
+
+### Decisions
+
+- **A.** Semrush is **not** the authoritative Search Universe generator.
+- **B.** The Search Universe is generated primarily from:
+  - Business Knowledge;
+  - the owner-approved Service / Offer Map and its service facets;
+  - GSC evidence;
+  - internal AI/research candidate generation;
+  - owner input and validation;
+  - other future evidence providers.
+- **C.** Semrush is an **evidence / enrichment provider**.
+- **D.** The primary Semrush use case is **enrichment of already-qualified candidate Search Topics / queries**, using low-cost single-keyword metrics (e.g. `phrase_this` or an equivalent single-keyword metrics report).
+- **E.** Broad-match and question reports (`phrase_fullsearch`, `phrase_questions`, `phrase_related` and equivalents) are **optional research capabilities** only.
+  - Their output is at most a list of *candidates*, which go through normal qualification and owner review.
+  - They must never automatically create approved Search Topics.
+  - The Search Universe must not depend on `phrase_related`, which returned nothing for an IL seed.
+- **F.** No Semrush report may define business relevance, commercial intent, service classification or Search Universe membership.
+- **G.** Search volume is evidence, not strategy (§9).
+- **H.** A provider metric is not read literally when data quality is weak. For example, **KD = 0 does not mean "easy to rank"**, and an empty intent does not mean "no intent".
+- **I.** Provider metrics carry **provenance**:
+  - provider, report, database/country, period, retrieval time, units;
+  - and, where appropriate, a **data-quality / confidence assessment** (e.g. placeholder-looking KD, empty intent, bucketed volume, short trend history).
+- **J.** The system keeps these separate:
+  - **observed provider demand**: a figure the provider reported (an estimate, not observed Google traffic);
+  - **inferred / estimated demand**: derived by the system;
+  - **strategic relevance**: business fit, owner priority;
+  - **confidence in the measurement**.
+
+  None of these substitutes for another, and GSC visibility stays a separate dimension (§9, §22).
+- **K.** Missing Semrush data (no row, `NOTHING FOUND`, zero or empty volume) **never proves that demand does not exist**. It is "unknown", never "zero demand".
+- **L.** Semrush stays **replaceable**.
+  - The OS data model stays provider-neutral (§33).
+  - Provider field names, report names and units stay inside the adapter.
+- **M.** Semrush access through MCP, if adopted, sits **behind a provider adapter / service boundary** owned by the application.
+  - Claude Code, or any interactive agent session, is not part of the application's runtime architecture.
+  - Agent-session MCP access is for research and evaluation only.
+
 ---
 
 # 34. Universal API Governance
@@ -1284,6 +1338,7 @@ If cache lookup, quota lookup or governance infrastructure fails, the system mus
 - **Balance check.** `visibilityGetSemrushBalance` (admin-only, POST) makes only Semrush's documented **free** balance request, `GET https://www.semrush.com/users/countapiunits.html?key=…` (Semrush *API unit balance*: "free API requests"; "Last updated: August 5, 2026"). It is independent of the V3 adapter, is bound to `SEMRUSH_API_KEY` on that function only, and never returns, logs or stores the key.
 - **Balance snapshots.** Each successful check appends one document to `semrushBalanceSnapshots`, with `{balance, checkedAt, source: "semrush_free_balance_check"}`. Documents are never overwritten. A snapshot is the authoritative balance at that moment. The opening balance after a renewal, later balances and deltas are derived by ordering snapshots by `checkedAt`.
 - **Paid usage** remains tracked in `apiUsage` through the governor. The **Semrush API Query Log** (query, time, database, report type, requested rows, report cost, remaining units) is the external source for reconciling our ledger.
+- **MCP vs REST (2026-10-14).** The owner reports that the account's 50,000 units are **Semrush MCP API units**, and that it has **no Semrush Standard API entitlement**. This is consistent with the V4 REST Keyword Metrics pilot call returning HTTP 403 (#61). A controlled MCP evaluation then succeeded (§33.1). Report costs observed through MCP: `phrase_this` 10 units per keyword, `phrase_fullsearch` 20 per row, `phrase_questions` 40 per row. These figures come from MCP response metadata on 2026-10-14 and are re-verified before budgeting.
 - **No monthly allowance is inferred yet.** Semrush units renew on the plan's renewal day, not on a calendar month. The governor's current "month" is a rolling 30 days that counts requests, not units. A unit budget tied to the billing cycle is future work, to be based on observed snapshots.
 
 ### Current production-readiness note
@@ -2419,6 +2474,7 @@ At the time of this document refresh:
 - Google updated generative-AI content guidance in October 2026 and its spam policies apply to generative-AI responses as well as classic Search.
 - FAQ rich results were deprecated beginning May 7, 2026.
 - Semrush's current API documentation recommends v4 for new Keyword Reports integrations; v3 Keyword Reports are deprecated, while non-migrated reports remain available in v3.
+- Semrush MCP (observed 2026-10-14, database `il`): single-keyword metrics are available at low unit cost. Broad-match and question discovery for Hebrew is sparse and noisy (KD 0, empty intent, bucketed volumes, short trend histories), and semantic related-keyword discovery returned no data for the tested seed (§33.1).
 
 These facts are external and time-sensitive. They must be re-verified rather than treated as permanent truths.
 
