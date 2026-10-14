@@ -81,6 +81,16 @@ async function setup({ topicStatus = "relevant", seedUsage = [] } = {}) {
   return { fake, store, db };
 }
 
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+// n prior provider attempts for a business, ageMs before the real clock
+// (store-level tests run on the real clock; calendar-day boundaries are
+// tested separately with a pinned clock - see the CAL tests).
+const usageRows = (businessId, n, ageMs) =>
+  Array.from({ length: n }, (_, i) => ({ provider: "semrush", operation: "enrichKeywordMetrics", businessId, status: "success", providerCalled: true, inputHash: `prior${i}`, retrievedAtMs: Date.now() - ageMs - i }));
+// rows "earlier today" without risking yesterday when the suite runs just after midnight
+const TODAY_AGE = 5;
+
 const ledger = (fake) => fake.rows("apiUsage").filter((r) => r.operation === "enrichKeywordMetrics");
 
 (async () => {
@@ -218,16 +228,17 @@ const ledger = (fake) => fake.rows("apiUsage").filter((r) => r.operation === "en
     const { store } = await setup();
     const f = fakeFetch({ status: 200, body: v4Body() });
     await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
-    // same day quota (1/day) blocks the new identity - proves it is not a cache hit and no call is made
+    // a new month is a new cache identity: not a cache hit, so a (second) provider call is made
     const r = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: Date.parse("2026-11-02T09:00:00Z"), fetchImpl: f });
-    assert.notStrictEqual(r.cacheHit, true);
-    assert.strictEqual(r.ok, false);
-    assert.strictEqual(r.blockedReason, "blocked_by_quota");
-    assert.strictEqual(f.calls.length, 1);
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(r.cacheHit, false);
+    assert.strictEqual(r.providerCalled, true);
+    assert.strictEqual(r.month, "2026-11");
+    assert.strictEqual(f.calls.length, 2);
   });
 
   await test("G4 budget/quota failure -> no provider call", async () => {
-    const { fake, store } = await setup({ seedUsage: [{ provider: "semrush", operation: "enrichKeywordMetrics", businessId: BIZ, status: "success", providerCalled: true, inputHash: "other", retrievedAtMs: Date.now() - 1000 }] });
+    const { fake, store } = await setup({ seedUsage: usageRows(BIZ, 5, TODAY_AGE) });
     const f = fakeFetch({ status: 200, body: v4Body() });
     const r = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
     assert.strictEqual(r.ok, false);
@@ -274,10 +285,8 @@ const ledger = (fake) => fake.rows("apiUsage").filter((r) => r.operation === "en
     const err = ledger(fake).find((x) => x.status === "error");
     assert.ok(err && err.providerCalled === true && err.estimatedUnits === 20 && err.providerUnitsUsed === null);
     assert.strictEqual((await db.collection("keywords").doc("k1").get()).data().marketDemand, undefined);
-    // the failed call counts toward the 1/day quota: a second click is blocked, not re-sent
-    const r2 = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
-    assert.strictEqual(r2.blockedReason, "blocked_by_quota");
-    assert.strictEqual(f.calls.length, 1);
+    // a failed call is never re-sent by itself, and it counts toward the quota
+    assert.strictEqual(ledger(fake).filter((x) => x.providerCalled === true).length, 1);
   });
 
   await test("G8 only an approved topic of this business, and only its stored queries", async () => {
@@ -355,13 +364,228 @@ const ledger = (fake) => fake.rows("apiUsage").filter((r) => r.operation === "en
     assert.ok(!leak(fake.rows("apiUsage")));
   });
 
-  await test("D3 the 403 is not retried later automatically: a second click is quota-blocked, not re-sent", async () => {
-    const { store } = await setup();
+  await test("D3 a 403 is never retried automatically: one request per explicit click, counted toward the quota", async () => {
+    const { fake, store } = await setup();
     const f = fakeFetch({ status: 403, body: { meta: { success: false }, error: { code: "FORBIDDEN", message: "denied", retryable: true } } });
     await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
-    const r2 = await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
-    assert.strictEqual(r2.blockedReason, "blocked_by_quota");
     assert.strictEqual(f.calls.length, 1, "retryable:true still not retried");
+    await store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
+    assert.strictEqual(f.calls.length, 2, "a second explicit click is a second (single) request");
+    assert.strictEqual(ledger(fake).filter((x) => x.status === "error" && x.providerCalled === true).length, 2, "both attempts are on the ledger");
+  });
+
+  // ---------------- pilot quota (owner-authorized: 5 per calendar day Asia/Jerusalem, 25 per rolling 30 days) ----------------
+  const ERR500 = { status: 500, body: { meta: { success: false }, error: { code: "INTERNAL", message: "boom" } } };
+  const click = (store, f) => store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: "אדריכלית בקיסריה", env: ENV, nowMs: NOW, fetchImpl: f });
+
+  await test("Q1 provider attempts 1-5 pass the quota check; the 6th is blocked_by_quota with no call", async () => {
+    const { store, db } = await setup();
+    // six distinct stored queries of the approved topic (distinct cache identities, successful calls -
+    // consecutive failures would instead trip the circuit breaker after 3, see G9)
+    const qs = ["q1", "q2", "q3", "q4", "q5", "q6"];
+    await db.collection("searchTopics").doc("t1").update({ queries: qs });
+    for (const q of qs) await db.collection("keywords").add({ businessId: BIZ, topicId: "t1", query: q, excludedByRule: null });
+    const f = fakeFetch({ status: 200, body: v4Body() });
+    const ask = (q) => store.enrichKeywordMetrics({ businessId: BIZ, topicId: "t1", query: q, env: ENV, nowMs: NOW, fetchImpl: f });
+    for (let i = 1; i <= 5; i++) {
+      const r = await ask(qs[i - 1]);
+      assert.strictEqual(r.ok, true, `attempt ${i}: ${r.error}`);
+      assert.strictEqual(r.providerCalled, true, `attempt ${i} passed the quota check`);
+      assert.strictEqual(f.calls.length, i);
+    }
+    const r6 = await ask(qs[5]);
+    assert.strictEqual(r6.ok, false);
+    assert.strictEqual(r6.blockedReason, "blocked_by_quota");
+    assert.strictEqual(r6.providerCalled, false);
+    assert.strictEqual(f.calls.length, 5, "6th never reached Semrush");
+    assert.ok(/limit 5/.test(r6.error), r6.error);
+  });
+
+  await test("G9 circuit breaker unchanged: 3 consecutive provider failures open it for 1 h (no call on the 4th)", async () => {
+    const { store } = await setup();
+    const f = fakeFetch(ERR500);
+    for (let i = 1; i <= 3; i++) assert.strictEqual((await click(store, f)).providerCalled, true);
+    const r4 = await click(store, f);
+    assert.strictEqual(r4.blockedReason, "blocked_by_safety_limit");
+    assert.strictEqual(f.calls.length, 3);
+  });
+
+  await test("Q3 cache hits and blocked attempts never count toward the quota", async () => {
+    const seeds = [
+      ...Array.from({ length: 10 }, (_, i) => ({ provider: "semrush", operation: "enrichKeywordMetrics", businessId: BIZ, status: "cache_hit", providerCalled: false, inputHash: `h${i}`, retrievedAtMs: Date.now() - 1000 })),
+      ...Array.from({ length: 10 }, (_, i) => ({ provider: "semrush", operation: "enrichKeywordMetrics", businessId: BIZ, status: "blocked_by_quota", providerCalled: false, inputHash: `b${i}`, retrievedAtMs: Date.now() - 1000 }))
+    ];
+    const { store } = await setup({ seedUsage: seeds });
+    const f = fakeFetch({ status: 200, body: v4Body() });
+    const r = await click(store, f);
+    assert.strictEqual(r.ok, true, r.error);
+    assert.strictEqual(f.calls.length, 1);
+  });
+
+  await test("Q4 monthly business limit: 24 attempts in 30 days allow the 25th; 25 block the 26th", async () => {
+    const f = fakeFetch({ status: 200, body: v4Body() });
+    const a = await setup({ seedUsage: usageRows(BIZ, 24, 3 * DAY) }); // all on earlier calendar days
+    assert.strictEqual((await click(a.store, f)).ok, true);
+    const b = await setup({ seedUsage: usageRows(BIZ, 25, 3 * DAY) });
+    const r = await click(b.store, f);
+    assert.strictEqual(r.blockedReason, "blocked_by_quota");
+    assert.ok(/this month/.test(r.error) && /limit 25/.test(r.error), r.error);
+    const c = await setup({ seedUsage: usageRows(BIZ, 25, 31 * DAY) }); // outside the rolling 30 days
+    assert.strictEqual((await click(c.store, f)).ok, true);
+    assert.strictEqual(f.calls.length, 2);
+  });
+
+  await test("Q5 global limits: 5 attempts by any business today block; 25 in 30 days block", async () => {
+    const f = fakeFetch({ status: 200, body: v4Body() });
+    const a = await setup({ seedUsage: usageRows("otherBiz", 5, TODAY_AGE) });
+    const r = await click(a.store, f);
+    assert.strictEqual(r.blockedReason, "blocked_by_quota");
+    assert.ok(/all businesses/.test(r.error) && /limit 5/.test(r.error), r.error);
+    const b = await setup({ seedUsage: usageRows("otherBiz", 25, 3 * DAY) });
+    const r2 = await click(b.store, f);
+    assert.strictEqual(r2.blockedReason, "blocked_by_quota");
+    assert.ok(/this month \(all businesses\)/.test(r2.error) && /limit 25/.test(r2.error), r2.error);
+    const c = await setup({ seedUsage: usageRows("otherBiz", 4, TODAY_AGE) });
+    assert.strictEqual((await click(c.store, f)).ok, true);
+    assert.strictEqual(f.calls.length, 1);
+  });
+
+  await test("Q6 pilot limits are exactly as authorized; every other operation's limits are unchanged", () => {
+    const L = require("../apiLimits");
+    const e = L.semrush.enrichKeywordMetrics;
+    assert.deepStrictEqual(
+      { units: e.unitsPerRequest, cap: e.maxEstimatedUnitsPerCall, bDay: e.maxRequestsPerBusinessPerDay, bMonth: e.maxRequestsPerBusinessPerMonth, gDay: e.maxRequestsGlobalPerDay, gMonth: e.maxRequestsGlobalPerMonth, ttl: e.cacheTtlMs, cbT: e.circuitBreakerThreshold, cbC: e.circuitBreakerCooldownMs },
+      { units: 20, cap: 20, bDay: 5, bMonth: 25, gDay: 5, gMonth: 25, ttl: 31 * DAY, cbT: 3, cbC: HOUR }
+    );
+    assert.deepStrictEqual(e.dailyWindow, { type: "calendar_day", timeZone: "Asia/Jerusalem" });
+    for (const op of [L.anthropic.analyzeBusinessServices, L.semrush.discoverRelatedForSeed, L.semrush.discoverDomainOrganic, L.google.searchConsoleQueryPage]) assert.strictEqual(op.dailyWindow, undefined, "other operations keep the default rolling day");
+    const q = (o) => [o.maxRequestsPerBusinessPerDay, o.maxRequestsPerBusinessPerMonth, o.maxRequestsGlobalPerDay, o.maxRequestsGlobalPerMonth];
+    assert.deepStrictEqual(q(L.anthropic.analyzeBusinessServices), [5, 30, 50, 500]);
+    assert.deepStrictEqual(q(L.semrush.discoverRelatedForSeed), [20, 120, 100, 1000]);
+    assert.deepStrictEqual(q(L.semrush.discoverDomainOrganic), [3, 30, 30, 300]);
+    assert.deepStrictEqual(q(L.google.searchConsoleQueryPage), [10, 120, 100, 2000]);
+    assert.deepStrictEqual(Object.keys(L).sort(), ["anthropic", "google", "semrush"]);
+    assert.deepStrictEqual(Object.keys(L.semrush).sort(), ["discoverDomainOrganic", "discoverRelatedForSeed", "enrichKeywordMetrics"]);
+  });
+
+  // ---------------- calendar day, Asia/Jerusalem (pinned clock, explicit offsets) ----------------
+  const GOV = path.join(__dirname, "..", "apiUsage.js");
+  const J = (local) => Date.parse(local); // ISO with an explicit Asia/Jerusalem offset, e.g. "2026-10-14T23:59:00+03:00"
+  const { calendarDayWindow } = require("../apiUsage");
+
+  await test("CAL1 window = [00:00, next 00:00) Asia/Jerusalem for any instant of the day", () => {
+    for (const t of ["2026-10-14T00:00:00+03:00", "2026-10-14T12:00:00+03:00", "2026-10-14T23:59:59+03:00"]) {
+      const w = calendarDayWindow(J(t), "Asia/Jerusalem");
+      assert.strictEqual(w.startMs, J("2026-10-14T00:00:00+03:00"), t);
+      assert.strictEqual(w.endMs, J("2026-10-15T00:00:00+03:00"), t);
+    }
+    const before = calendarDayWindow(J("2026-10-13T23:59:00+03:00"), "Asia/Jerusalem");
+    assert.strictEqual(before.endMs, J("2026-10-14T00:00:00+03:00"), "23:59 belongs to the previous day");
+    const after = calendarDayWindow(J("2026-10-14T00:01:00+03:00"), "Asia/Jerusalem");
+    assert.strictEqual(after.startMs, J("2026-10-14T00:00:00+03:00"), "00:01 belongs to the new day");
+  });
+
+  await test("CAL2 DST: spring-forward day is 23 h, fall-back day is 25 h, both start at local midnight", () => {
+    const spring = calendarDayWindow(J("2026-03-27T12:00:00+03:00"), "Asia/Jerusalem");
+    assert.strictEqual(spring.startMs, J("2026-03-27T00:00:00+02:00"));
+    assert.strictEqual(spring.endMs, J("2026-03-28T00:00:00+03:00"));
+    assert.strictEqual(spring.endMs - spring.startMs, 23 * HOUR);
+    const fall = calendarDayWindow(J("2026-10-25T12:00:00+02:00"), "Asia/Jerusalem");
+    assert.strictEqual(fall.startMs, J("2026-10-25T00:00:00+03:00"));
+    assert.strictEqual(fall.endMs, J("2026-10-26T00:00:00+02:00"));
+    assert.strictEqual(fall.endMs - fall.startMs, 25 * HOUR);
+    // the repeated 01:xx hour on the fall-back night is still the same day
+    for (const t of ["2026-10-25T01:30:00+03:00", "2026-10-25T01:30:00+02:00"]) assert.strictEqual(calendarDayWindow(J(t), "Asia/Jerusalem").startMs, fall.startMs, t);
+  });
+
+  await test("CAL3 independent of the runtime time zone (same windows under TZ=UTC, Los Angeles, Tokyo, Jerusalem)", () => {
+    const { execFileSync } = require("child_process");
+    const script = `const {calendarDayWindow}=require(${JSON.stringify(GOV)});console.log(JSON.stringify(["2026-10-14T23:59:00+03:00","2026-10-15T00:01:00+03:00","2026-03-27T12:00:00+03:00","2026-10-25T12:00:00+02:00"].map(t=>calendarDayWindow(Date.parse(t),"Asia/Jerusalem"))))`;
+    const outs = ["UTC", "America/Los_Angeles", "Asia/Tokyo", "Asia/Jerusalem"].map((tz) => execFileSync(process.execPath, ["-e", script], { env: { ...process.env, TZ: tz } }).toString().trim());
+    assert.ok(outs.every((o) => o === outs[0]), outs.join("\n"));
+  });
+
+  async function governedAt(nowMs, seeds) {
+    const fake = createFakeFirestore();
+    const gov = loadWithFake(fake, GOV);
+    for (const r of seeds) fake.seed("apiUsage", { provider: "semrush", operation: "enrichKeywordMetrics", status: "success", providerCalled: true, inputHash: "prior", ...r });
+    let calls = 0;
+    const out = await gov.runGoverned({
+      provider: "semrush",
+      operation: "enrichKeywordMetrics",
+      businessId: BIZ,
+      input: { keyword: `k${Math.random()}`, country: "IL", month: "2026-10", providerVersion: "test" },
+      model: "test",
+      nowMs,
+      estimateUnits: () => 20,
+      execute: async () => (calls++, { result: { ok: 1 }, usage: { providerUnitsUsed: 20 } })
+    });
+    return { out, calls };
+  }
+  const at = (local, biz = BIZ) => ({ businessId: biz, retrievedAtMs: J(local) });
+
+  await test("CAL4 5 attempts on the same Asia/Jerusalem day are allowed; the 6th that day is blocked_by_quota", async () => {
+    const four = ["2026-10-14T00:00:30+03:00", "2026-10-14T08:00:00+03:00", "2026-10-14T15:00:00+03:00", "2026-10-14T23:58:00+03:00"].map((t) => at(t));
+    const a = await governedAt(J("2026-10-14T23:59:00+03:00"), four);
+    assert.strictEqual(a.calls, 1, "5th attempt allowed");
+    const b = await governedAt(J("2026-10-14T23:59:30+03:00"), [...four, at("2026-10-14T23:59:00+03:00")]);
+    assert.strictEqual(b.calls, 0, "6th attempt blocked");
+    assert.strictEqual(b.out.decision, "blocked_by_quota");
+    assert.ok(/calendar day, Asia\/Jerusalem/.test(b.out.blocked.message) && /limit 5/.test(b.out.blocked.message), b.out.blocked.message);
+  });
+
+  await test("CAL5 5 attempts on the previous day (incl. 23:59) do not block today's first attempt at 00:01", async () => {
+    const yesterday = ["2026-10-13T09:00:00+03:00", "2026-10-13T12:00:00+03:00", "2026-10-13T18:00:00+03:00", "2026-10-13T23:00:00+03:00", "2026-10-13T23:59:00+03:00"].map((t) => at(t));
+    const r = await governedAt(J("2026-10-14T00:01:00+03:00"), yesterday);
+    assert.strictEqual(r.calls, 1);
+    assert.strictEqual(r.out.decision, "cache_miss");
+    const sameDay = await governedAt(J("2026-10-13T23:59:30+03:00"), yesterday);
+    assert.strictEqual(sameDay.calls, 0, "those five do block the rest of their own day");
+  });
+
+  await test("CAL6 an attempt at 00:01 belongs to the new day (not counted for the previous day)", async () => {
+    const rows = [...["2026-10-14T10:00:00+03:00", "2026-10-14T11:00:00+03:00", "2026-10-14T12:00:00+03:00", "2026-10-14T13:00:00+03:00"].map((t) => at(t)), at("2026-10-15T00:01:00+03:00")];
+    const prev = await governedAt(J("2026-10-14T23:59:00+03:00"), rows);
+    assert.strictEqual(prev.calls, 1, "the 00:01 row is outside 14 Oct (4 counted)");
+    const next = await governedAt(J("2026-10-15T00:02:00+03:00"), rows);
+    assert.strictEqual(next.calls, 1, "on 15 Oct only the 00:01 row counts (1 of 5)");
+  });
+
+  await test("CAL7 global daily limit uses the same calendar day across businesses", async () => {
+    const others = ["01:00", "05:00", "09:00", "13:00", "17:00"].map((h) => at(`2026-10-14T${h}:00+03:00`, "otherBiz"));
+    const r = await governedAt(J("2026-10-14T20:00:00+03:00"), others);
+    assert.strictEqual(r.calls, 0);
+    assert.ok(/all businesses/.test(r.out.blocked.message), r.out.blocked.message);
+    const tomorrow = await governedAt(J("2026-10-15T00:01:00+03:00"), others);
+    assert.strictEqual(tomorrow.calls, 1);
+  });
+
+  await test("CAL8 DST fall-back day (25 h): attempts at 00:30 (+03) and 23:30 (+02) are the same day", async () => {
+    const rows = ["2026-10-25T00:30:00+03:00", "2026-10-25T01:30:00+03:00", "2026-10-25T01:30:00+02:00", "2026-10-25T12:00:00+02:00", "2026-10-25T23:30:00+02:00"].map((t) => at(t));
+    const r = await governedAt(J("2026-10-25T23:45:00+02:00"), rows);
+    assert.strictEqual(r.calls, 0, "all five counted on 25 Oct");
+    const next = await governedAt(J("2026-10-26T00:00:00+02:00"), rows);
+    assert.strictEqual(next.calls, 1, "midnight starts a new day");
+  });
+
+  await test("CAL9 month stays a rolling 30 days (pinned clock): 25 attempts on earlier days in the last 30 days block", async () => {
+    const rows = Array.from({ length: 25 }, (_, i) => at(`2026-10-${String(1 + i).padStart(2, "0")}T12:00:00+03:00`));
+    const r = await governedAt(J("2026-10-27T10:00:00+02:00"), rows);
+    assert.strictEqual(r.calls, 0);
+    assert.ok(/this month/.test(r.out.blocked.message) && /limit 25/.test(r.out.blocked.message), r.out.blocked.message);
+    const later = await governedAt(J("2026-11-25T10:00:00+02:00"), rows); // all older than 30 days
+    assert.strictEqual(later.calls, 1);
+  });
+
+  await test("CAL10 an invalid time zone fails closed (no provider call)", async () => {
+    const fake = createFakeFirestore();
+    const L = JSON.parse(JSON.stringify(require("../apiLimits")));
+    L.semrush.enrichKeywordMetrics.dailyWindow = { type: "calendar_day", timeZone: "Not/AZone" };
+    const gov = loadWithFake(fake, GOV, { [path.join(__dirname, "..", "apiLimits.js")]: L });
+    let calls = 0;
+    const out = await gov.runGoverned({ provider: "semrush", operation: "enrichKeywordMetrics", businessId: BIZ, input: { k: 1 }, estimateUnits: () => 20, execute: async () => (calls++, { result: {}, usage: {} }) });
+    assert.strictEqual(calls, 0);
+    assert.strictEqual(out.decision, "blocked_safety_check_unavailable");
   });
 
   // ---------------- endpoint guards ----------------
