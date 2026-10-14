@@ -128,6 +128,16 @@ async function test(name, fn) {
 
 const byType = (opps, type) => opps.filter((o) => o.type === type);
 
+// #55: relative market-demand tiers need >= 4 approved topics with positive
+// demand. The base fixture has one (tRank, realistic for a first pilot);
+// this mutation makes the sample adequate without changing tRank's rank
+// (it stays the highest value -> tier 3, exactly as before the guard).
+const withDemandSample = (f) => {
+  const extra = { tHealthy: 300, tOverlap: 200, tWait: 100 };
+  f.topicIntel = f.topicIntel.map((x) => (extra[x.topicId] ? { ...x, semrush: { status: "available", totalMonthlyVolume: extra[x.topicId] } } : x));
+  return f;
+};
+
 (async () => {
   await test("a topic can carry two complementary findings (position band + low CTR)", async () => {
     const t = await setup((f) => {
@@ -225,10 +235,10 @@ const byType = (opps, type) => opps.filter((o) => o.type === type);
   });
 
   await test("confidence: reasons reduce it; observed + crawled + baseline = high", async () => {
-    const t = await setup();
+    const t = await setup(withDemandSample);
     await t.run();
     const opps = t.engineOpps();
-    assert.strictEqual(byType(opps, "ranking_upside")[0].confidence, "high", "tRank has stored Semrush demand -> nothing unknown");
+    assert.strictEqual(byType(opps, "ranking_upside")[0].confidence, "high", "tRank has stored, tiered Semrush demand -> nothing unknown");
     const ctr = byType(opps, "ctr_upside")[0];
     assert.strictEqual(ctr.confidence, "medium", "no Semrush for tCtr -> market demand unknown lowers confidence");
     assert.ok(ctr.confidenceReasons.some((r) => r.includes("ביקוש בשוק")));
@@ -460,8 +470,14 @@ const byType = (opps, type) => opps.filter((o) => o.type === type);
     assert.strictEqual(ctr.signals.visibility.source, "search_console");
     assert.strictEqual(ctr.signals.visibility.impressions, 300);
     const rank = byType(t.engineOpps(), "ranking_upside")[0];
-    assert.strictEqual(factorOf(rank, "marketDemand").basis, "observed", "Semrush stored -> market demand known");
+    // base fixture: one enriched topic -> value kept, tier withheld (#55)
+    assert.strictEqual(factorOf(rank, "marketDemand").basis, "insufficient_sample", "Semrush stored but only one topic -> untiered");
     assert.strictEqual(rank.signals.marketDemand.source, "semrush");
+    const t2 = await setup(withDemandSample);
+    await t2.run();
+    const rank2 = byType(t2.engineOpps(), "ranking_upside")[0];
+    assert.strictEqual(factorOf(rank2, "marketDemand").basis, "observed", "adequate sample -> market demand tiered");
+    assert.strictEqual(rank2.signals.marketDemand.source, "semrush");
   });
 
   await test("MD3 zero GSC impressions never becomes zero market demand", async () => {
@@ -490,6 +506,7 @@ const byType = (opps, type) => opps.filter((o) => o.type === type);
     assert.notStrictEqual(gap.priority, "high", "unknown demand never inflates a demand-dependent gap to high");
     // with market demand evidence the same gap regains full confidence
     const t2 = await setup((f) => {
+      withDemandSample(f);
       f.topicIntel = f.topicIntel.map((x) => (x.topicId === "tGap" ? { ...x, semrush: { status: "available", totalMonthlyVolume: 900 } } : x));
       return f;
     });
@@ -536,6 +553,92 @@ const byType = (opps, type) => opps.filter((o) => o.type === type);
     await assert.rejects(() => t.run(), /UNAVAILABLE/);
     assert.strictEqual(t.engineOpps().length, 0);
     assert.strictEqual(t.fake.rows("opportunityRuns").length, 0);
+  });
+
+  // ---------------- #55 market-demand tier: minimum sample ----------------
+  // The tier rule as it was before the guard - used to prove adequate samples are unchanged.
+  function legacyTier(value, values) {
+    const v = values.filter((x) => x > 0).sort((a, b) => a - b);
+    const t = v.length ? { low: v[Math.floor((v.length - 1) / 3)], high: v[Math.floor(((v.length - 1) * 2) / 3)] } : null;
+    if (value == null) return null;
+    if (value <= 0) return 0;
+    if (!t) return 1;
+    return value >= t.high ? 3 : value >= t.low ? 2 : 1;
+  }
+  // Deterministic pure detection with demand volumes assigned to approved topics.
+  function detectWith(demand) {
+    const f = fixture();
+    f.topicIntel = f.topicIntel.map((x) => ({ ...x, semrush: demand[x.topicId] != null ? { status: "available", totalMonthlyVolume: demand[x.topicId] } : { status: "not_available" } }));
+    return detect({ business: { id: BIZ, ...f.business }, run: f.run, topicIntel: f.topicIntel, searchTopics: f.searchTopics, seoPages: f.seoPages, baseline: f.baseline }, DEFAULT_WEIGHTS).opportunities;
+  }
+  const demandFactors = (opps) => opps.filter((o) => o.targetTopicIds && o.targetTopicIds.length === 1).map((o) => ({ topic: o.targetTopicIds[0], type: o.type, f: o.factors.find((x) => x.key === "marketDemand"), o }));
+
+  await test("DT1 zero enriched topics: market demand unknown (not low, not untiered)", () => {
+    for (const d of demandFactors(detectWith({}))) {
+      assert.strictEqual(d.f.level, null, d.topic);
+      assert.strictEqual(d.f.basis, "unknown", d.topic);
+      assert.strictEqual(d.o.signals.marketDemand.tierStatus, "unknown");
+      assert.strictEqual(d.o.signals.marketDemand.source, null);
+    }
+  });
+
+  await test("DT2 one enriched topic, volume 10 or 10,000: never 'high' - kept, untiered, explained", () => {
+    const seen = {};
+    for (const vol of [10, 10000]) {
+      const rank = demandFactors(detectWith({ tRank: vol })).find((d) => d.type === "ranking_upside");
+      assert.strictEqual(rank.f.level, null, `${vol}: no relative tier from a single value`);
+      assert.strictEqual(rank.f.basis, "insufficient_sample");
+      assert.strictEqual(rank.f.contribution, null, "withheld from the score, like unknown");
+      assert.ok(rank.f.explanation.includes(String(vol)) && rank.f.explanation.includes("לא דורג") && rank.f.explanation.includes("1 נושאים"), rank.f.explanation);
+      assert.strictEqual(rank.o.signals.marketDemand.source, "semrush", "provenance kept");
+      assert.strictEqual(rank.o.signals.marketDemand.tierStatus, "insufficient_sample");
+      assert.ok(rank.o.missing.includes("factor_untiered_insufficient_sample:marketDemand"));
+      assert.ok(!rank.o.missing.includes("factor_unknown:marketDemand"), "distinct from unknown");
+      assert.ok(rank.o.confidenceReasons.some((r) => r.includes("אין מספיק נושאים להשוואה")), rank.o.confidenceReasons.join(" | "));
+      seen[vol] = { score: rank.o.score, priority: rank.o.priority, confidence: rank.o.confidence };
+    }
+    assert.deepStrictEqual(seen[10], seen[10000], "a lone value cannot rank itself: 10 and 10,000 score the same");
+  });
+
+  await test("DT3 two (and three) enriched topics: still untiered for all of them", () => {
+    for (const demand of [{ tRank: 1300, tGap: 900 }, { tRank: 1300, tGap: 900, tHidden: 50 }]) {
+      const ds = demandFactors(detectWith(demand)).filter((d) => demand[d.topic] != null);
+      assert.ok(ds.length >= 2);
+      for (const d of ds) assert.strictEqual(d.f.basis, "insufficient_sample", `${Object.keys(demand).length} enriched: ${d.topic}`);
+      // a demand-dependent gap with untiered demand is capped like unknown demand
+      const gap = ds.find((d) => d.type === "coverage_gap");
+      if (gap) assert.notStrictEqual(gap.o.priority, "high");
+    }
+  });
+
+  await test("DT4 adequate sample (>= 4): tiers identical to the previous tercile rule", () => {
+    const demand = { tRank: 1300, tCtr: 40, tGap: 900, tHidden: 50, tOverlap: 200, tHealthy: 300, tWait: 100 };
+    const values = Object.values(demand);
+    const ds = demandFactors(detectWith(demand)).filter((d) => demand[d.topic] != null);
+    assert.ok(ds.length >= 4);
+    for (const d of ds) {
+      assert.strictEqual(d.f.basis, "observed", d.topic);
+      assert.strictEqual(d.f.level, legacyTier(demand[d.topic], values), `${d.topic}: same tier as before`);
+      assert.strictEqual(d.o.signals.marketDemand.tierStatus, "tiered");
+    }
+    // the exact minimum (4) tiers; 3 does not (DT3)
+    const four = { tRank: 1300, tGap: 900, tHidden: 50, tOverlap: 200 };
+    for (const d of demandFactors(detectWith(four)).filter((x) => four[x.topic] != null)) assert.strictEqual(d.f.level, legacyTier(four[d.topic], Object.values(four)), d.topic);
+  });
+
+  await test("DT5 a reported 0 stays level 0 regardless of sample size (absolute, unchanged)", () => {
+    const rank = demandFactors(detectWith({ tRank: 0 })).find((d) => d.type === "ranking_upside");
+    assert.strictEqual(rank.f.level, 0);
+    assert.strictEqual(rank.f.basis, "observed");
+  });
+
+  await test("DT6 the guard is provider-neutral and lives in config", () => {
+    const cfg = require("../opportunityConfig");
+    assert.strictEqual(cfg.THRESHOLDS.minDemandTierSample, 4);
+    assert.strictEqual(cfg.CONFIG_VERSION, 3, "config change is part of the cache identity");
+    const src = fs.readFileSync(path.join(__dirname, "..", "opportunityRules.js"), "utf8");
+    const guard = src.slice(src.indexOf("const demandSample"), src.indexOf("const minImpr"));
+    assert.ok(!/semrush/i.test(guard), "sample guard does not reference a provider");
   });
 
   await test("determinism: same input -> identical detection output", async () => {
