@@ -81,7 +81,11 @@ function buildContext({ business, run, topicIntel, searchTopics, seoPages, basel
   const pagesByKey = new Map(seoPages.map((p) => [p.pageKey, p]));
   const gscImpr = approvedIntel.map((ti) => (ti.gscCurrent && ti.gscCurrent.status === "available" ? ti.gscCurrent.impressions || 0 : ti.gscCurrent && ti.gscCurrent.status === "no_observation" ? 0 : null));
   const semVol = approvedIntel.map((ti) => (ti.semrush && ti.semrush.status === "available" ? ti.semrush.totalMonthlyVolume || 0 : null));
-  const imprT = terciles(gscImpr.filter((x) => x != null));
+  // #64: relative visibility tiers need a minimum number of topics with
+  // positive impressions; below it no tiers (and no tercile threshold).
+  const visibilitySample = gscImpr.filter((x) => x != null && x > 0).length;
+  const visibilityTiered = visibilitySample >= THRESHOLDS.minVisibilityTierSample;
+  const imprT = visibilityTiered ? terciles(gscImpr.filter((x) => x != null)) : null;
   // #55: relative demand tiers need a minimum number of topics with positive
   // demand; below it no tiers are derived (values stay, tiers are withheld).
   const demandSample = semVol.filter((x) => x != null && x > 0).length;
@@ -98,6 +102,8 @@ function buildContext({ business, run, topicIntel, searchTopics, seoPages, basel
     approvedIntel,
     pagesByKey,
     imprT,
+    visibilitySample,
+    visibilityTiered,
     volT,
     demandSample,
     demandTiered,
@@ -155,7 +161,18 @@ function marketDemandOf(ti, ctx) {
 function visibilityOf(ti, ctx) {
   const g = ti.gscCurrent || {};
   const period = g.period ? ` (${g.period.startDate} – ${g.period.endDate})` : "";
-  if (g.status === "available") return { level: tierLevel(g.impressions || 0, ctx.imprT), basis: "observed", source: "search_console", explanation: `${g.impressions || 0} חשיפות ב-Search Console${period}, ביחס לשאר הנושאים שלך` };
+  // #64: positive impressions with too few comparable topics are kept as an
+  // observation but not tiered. Zero impressions stay an observed level 0.
+  if (g.status === "available" && (g.impressions || 0) > 0 && !ctx.visibilityTiered) {
+    return {
+      level: null,
+      basis: "insufficient_sample",
+      source: "search_console",
+      tierStatus: "insufficient_sample",
+      explanation: `${g.impressions} חשיפות ב-Search Console${period} — לא דורג: רק ל-${ctx.visibilitySample} נושאים מאושרים יש חשיפות, ונדרשים לפחות ${THRESHOLDS.minVisibilityTierSample} כדי להשוות ביניהם`
+    };
+  }
+  if (g.status === "available") return { level: tierLevel(g.impressions || 0, ctx.imprT), basis: "observed", source: "search_console", tierStatus: "tiered", explanation: `${g.impressions || 0} חשיפות ב-Search Console${period}, ביחס לשאר הנושאים שלך` };
   if (g.status === "no_observation") return { level: 0, basis: "observed", source: "search_console", explanation: `לא נרשמו חשיפות ב-Search Console לשאילתות הנושא${period}` };
   return { level: null, basis: "unknown", source: null, explanation: "אין נתוני Search Console עדכניים" };
 }
@@ -585,7 +602,16 @@ function detect(input, weights) {
             tierStatus: f.marketDemand.basis === "insufficient_sample" ? "insufficient_sample" : f.marketDemand.basis === "not_applicable" ? "not_applicable" : f.marketDemand.level == null ? "unknown" : "tiered"
           }
         : null,
-      visibility: o.impactInputs && o.impactInputs.current ? { ...o.impactInputs.current, level: f.observedVisibility ? f.observedVisibility.level : null, basis: "observed", source: "search_console" } : null,
+      visibility:
+        o.impactInputs && o.impactInputs.current
+          ? {
+              ...o.impactInputs.current,
+              level: f.observedVisibility ? f.observedVisibility.level : null,
+              basis: "observed",
+              source: "search_console",
+              tierStatus: !f.observedVisibility ? null : f.observedVisibility.basis === "insufficient_sample" ? "insufficient_sample" : f.observedVisibility.notApplicable ? "not_applicable" : f.observedVisibility.level == null ? "unknown" : "tiered"
+            }
+          : null,
       technical: (o.signalExtra && o.signalExtra.technical) || null,
       content: o.type === "coverage_gap" || o.type === "page_not_visible" ? { level: 2, basis: "inference" } : null,
       entity: null,
@@ -599,4 +625,5 @@ function detect(input, weights) {
   return { opportunities: out, topicEvaluations: evaluations, context: { minImpressions: ctx.minImpr, siteCtr: ctx.siteCtr, approvedTopicsAnalyzed: ctx.approvedIntel.length } };
 }
 
-module.exports = { detect, dedupeKey, score, band, confidenceOf, APPROVED };
+// buildContext / visibilityOf exported for tests only.
+module.exports = { detect, dedupeKey, score, band, confidenceOf, APPROVED, buildContext, visibilityOf };

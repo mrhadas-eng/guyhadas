@@ -153,7 +153,7 @@ Ordinal levels 0–3 per factor; `null` = unknown (excluded from the score, lowe
 | `businessRelevance` | owner status priority / brand_strategic = 3; relevant = 2; +1 (max 3) if linked to a confirmed service; site-level = 2 | observed (owner) |
 | `commercialValue` | preliminary intent commercial / local or commercial modifier = 3; navigational = 2; informational = 1; unclassified = null | inference |
 | `marketDemand` | Demand-provider (Semrush today) monthly volume tier relative to this business's approved topics. It is tiered **only when evidence exists** and **at least 4 approved topics have positive demand** (`THRESHOLDS.minDemandTierSample`, see §9b). With fewer, the value is kept but left untiered: `null`, basis `insufficient_sample`. With no evidence it is `null` (unknown). Both are excluded from the score and lower confidence. Never derived from Search Console | observed / insufficient_sample / unknown |
-| `observedVisibility` | Search Console impressions tier relative to this business's approved topics (no impressions observed = 0). Scored only where existing visibility is the value at stake (ranking / CTR / overlap, and page findings on pages observed for a topic). For coverage gaps and pages without visibility it is **not applicable**: the missing visibility is the reason for the opportunity, not evidence of low value | observed |
+| `observedVisibility` | Search Console impressions tier relative to this business's approved topics. It is tiered only when **at least 4 approved topics have positive impressions** (`THRESHOLDS.minVisibilityTierSample`, see §9c); with fewer, a positive value is kept but untiered (`null`, basis `insufficient_sample`). No impressions observed = 0, always. Scored only where existing visibility is the value at stake (ranking / CTR / overlap, and page findings on pages observed for a topic). For coverage gaps and pages without visibility it is **not applicable**: the missing visibility is the reason for the opportunity, not evidence of low value | observed |
 | `upside` | type-specific: blocker on a visible page = 3; position 4–10 = 3, 11–20 = 2; CTR < 50 % of site CTR = 3; coverage gap = 2; … | observed + assumption (position tiers) |
 | `effortInverse` | technical / CTR / internal links = 3 (small), ranking/content/entity = 2, new page / overlap review = 1 | assumption |
 
@@ -205,7 +205,37 @@ Below the minimum:
 - The topic-intelligence demand value and its provenance are untouched; only the derived tier changes.
 - M6 uses its own absolute demand sum and is unaffected.
 
-**Known similar case, not changed here:** the Search Console visibility tier (`imprT`) uses the same terciles and has the same sparse-sample behaviour.
+The Search Console visibility tier (`imprT`) had the same sparse-sample behaviour; it is fixed by the same principle in §9c (#64).
+
+## 9c. Minimum sample for relative visibility tiers and the impressions threshold (#64, config version 4)
+
+**Problem.** `imprT` is the terciles of the approved topics' positive Search Console impressions. It caused two errors:
+- **Tiers.** With 1–2 positive topics every one was visibility tier 3; with 3, the smallest was tier 2 and the rest tier 3. The topic was being compared with itself or a tiny sample.
+- **Threshold.** `minImpr = max(minImpressionsAbsolute, imprT.low)` turned into the smallest positive value, so a single topic with 400 impressions set its own threshold to 400.
+
+**Rule.** Relative visibility tiers are derived only when at least `minVisibilityTierSample` (4) approved topics have **positive** impressions. This is a sample-size ASSUMPTION; it contains no provider-specific logic.
+
+Below the minimum:
+- **The tier.** A positive value gets `level: null` and `basis: "insufficient_sample"`, with `source: "search_console"`. The explanation states the impressions, the period and the sample size.
+- **The signal.** `signals.visibility` keeps the impressions, clicks and period, keeps `source: "search_console"`, and adds `tierStatus: "insufficient_sample"`.
+- **Scoring and confidence.** The same generic handling as §9b applies:
+  - the factor is excluded from the score;
+  - `missing` gets `factor_untiered_insufficient_sample:observedVisibility`, which is distinct from `factor_unknown`;
+  - confidence drops one step, shared with any other unknown or untiered factor, with the reason "יש נתון אך אין מספיק נושאים להשוואה".
+- **`no_observation`, or a value of 0 impressions,** stays an observed **level 0**. It never becomes unknown or untiered.
+- **`minImpr`** is the absolute floor (`minImpressionsAbsolute`, 20). The lower tercile is not used.
+
+**Which topics pass the threshold doesn't change.** In a sparse sample the old threshold was `max(20, smallest positive)`, and every positive topic is at or above the smallest positive value. So under both rules a topic passed exactly when it had 20 or more impressions. Only the threshold *reported* in reasons and in `context.minImpressions` changes.
+
+**What does change for sparse samples.** Ranking, CTR and overlap opportunities are still detected. Their visibility factor is withheld from the score, which is renormalised over the known factors, and their confidence drops one step, so their priority can move.
+
+**Unchanged.**
+- With 4 or more positive topics, tiers and `minImpr` are identical to before (tests VT4 and VT5 compare against the old rule).
+- Weights and priority bands.
+- The market-demand rule (§9b).
+- M6, which uses its own absolute observed-visibility figures.
+
+**Edge case.** Page-level opportunities take the best visibility level among the topics a page was observed for. If those include an observed 0 next to an untiered positive value, the page shows 0.
 
 ## 10. Relationship to the M4 baseline
 
@@ -285,3 +315,10 @@ Decisions taken during implementation are appended below.
 8. **Page-level findings use only pages fetched in the latest crawl** — a stale observation never creates a new opportunity.
 9. **Site-level `entity_clarity` excludes structured-data coverage and audience/positioning**: Google documents no special markup requirement for AI features, and positioning needs M6 entity work. A *conflicting* fact (e.g. two phone numbers) is observed and gets high confidence; "missing" signals are assumption-based and capped at medium confidence.
 10. **Market demand ≠ observed visibility** (§9a): `demand` split into `marketDemand` (Semrush only, unknown otherwise) and `observedVisibility` (Search Console). Config version 2; the old `demand` weight key is ignored.
+11. **Relative market-demand tiers need a minimum sample** (#55, §9b). Below 4 approved topics with positive demand, the value is kept but untiered (`insufficient_sample`), never shown as low or high. Config version 3.
+12. **Relative visibility tiers and the tercile part of `minImpr` need a minimum sample** (#64, §9c). Below 4 approved topics with positive impressions:
+    - a positive value is kept but untiered (`insufficient_sample`, source Search Console);
+    - an observed zero stays level 0;
+    - `minImpr` is the absolute floor (20).
+
+    Which topics pass the threshold is unchanged; adequate samples are unchanged. Config version 4.
