@@ -385,6 +385,11 @@ Sources may include:
 
 Search volume is evidence, not strategy.
 
+**Clarification (2026-10-14, amended 2026-10-19; §33.1).** The flow above is unchanged, and it is the only path from discovery to approval.
+- **MARKET DISCOVERY** may use Semrush as one evidence source among several: the Service Map and its facets, Business Knowledge, GSC, internal AI / research, future providers and owner input. Together they produce the **Market Discovery Universe** of candidates.
+- Only candidates that pass filtering, normalization, qualification and **owner review** become the **Approved Search Universe**.
+- Semrush can discover market candidates, enrich them and supply market-demand evidence. It never bypasses qualification or owner approval, and it never decides relevance, commercial intent, service classification or membership.
+
 GSC represents actual current visibility, not the complete market universe.
 
 ---
@@ -1200,6 +1205,96 @@ Evidence / Intelligence layer
 Opportunity / Decision layer
 ```
 
+## 33.1 Semrush is a market evidence provider, not the authority on the Search Universe (decision, 2026-10-14; amended 2026-10-19)
+
+**Status: decided by the owner on 2026-10-14, after a controlled Semrush MCP capability evaluation, and amended on 2026-10-19.** The amendment makes explicit that Semrush may also **discover** candidates. Implementation note: `docs/SEMRUSH_MCP_ADAPTER_NOTE.md`; backlog #62. No Semrush MCP integration exists yet.
+
+> **Principle: Semrush can help us discover the market, but it cannot decide what the market means for this business.**
+
+### Evidence (controlled Semrush MCP tests, database `il`, 2026-10-14; 2,710 API units in total)
+
+| Report | Seed | Result | Units |
+|---|---|---|---|
+| `phrase_this` (single keyword) | "אדריכלות בתל אביב" | Real data: volume 50, CPC 2.27, competition 0.23, 12-month trend. KD 0, intent empty. | 10 |
+| `phrase_fullsearch` (broad match) | "אדריכלות בתל אביב" | 35 variations. 8 of 35 relevant to hiring an architect; 4 of 35 with non-zero volume. The majority were education, tourism/heritage, crossword or other noise. | 700 (20 per row) |
+| `phrase_related` (semantic related) | "אדריכלות בתל אביב" | `ERROR 50 :: NOTHING FOUND` | none reported |
+| `phrase_questions` | "אדריכלות" | 50 rows. 0 of 50 commercially relevant (mostly architecture education/career). KD 0 and intent empty throughout; trend histories often incomplete (3–4 points); volumes appear bucketed (20/30). | 2,000 (40 per row) |
+
+**What this shows:**
+- Semrush discovery **works**: broad match and questions returned real candidates.
+- In these Hebrew / IL tests its quality was **noisy and sparse**: few relevant rows, many zero or bucketed volumes, KD 0 and empty intent, and no semantic related results.
+
+Semrush discovery is therefore useful as **evidence**, not as **authority**.
+
+These are observations from one market (Hebrew / IL) and one business domain on one date. Like every external fact (§46), they are re-verified before being relied on elsewhere.
+
+### Two layers
+
+| | **Market Discovery Universe** | **Approved Search Universe** |
+|---|---|---|
+| What it holds | Candidate queries / topics and their evidence | Only qualified, owner-validated Search Topics |
+| Sources | Business Knowledge; Service Map and facets; GSC; internal AI / research; **Semrush**; future providers; owner input | The Market Discovery Universe, after qualification and owner review |
+| Status of an item | Candidate. **Never approved automatically** | Approved (relevant / priority / brand strategic) |
+| Used by | Qualification and owner review | SEO analysis (M4), opportunities (M5), decisions (M6), tracking and measurement (M7+) and execution |
+
+The M3.2 pipeline (§9) is the only path from the first layer to the second:
+- seeds from the confirmed Service Map;
+- market discovery;
+- raw queries, filtering and normalization;
+- Search Topics, then qualification;
+- **owner review**.
+
+### Decisions
+
+- **A.** Semrush is a **market evidence provider**. It may provide:
+  1. **candidate discovery**: market queries / topics around seeds built from the confirmed Service Map;
+  2. **candidate enrichment**: metrics for known candidates or approved queries;
+  3. **market-demand evidence**: provider-reported demand estimates.
+- **B.** Semrush is **not authoritative** for:
+  - business relevance;
+  - commercial intent;
+  - service classification;
+  - Search Universe membership;
+  - owner approval.
+
+  No Semrush report or metric decides any of these.
+- **C.** Search Universe generation stays **multi-source and owner-controlled**. The Market Discovery Universe draws on:
+  - Business Knowledge;
+  - the Service Map and its facets;
+  - GSC evidence;
+  - internal AI / research;
+  - Semrush and future providers;
+  - owner input.
+
+  The Approved Search Universe is decided only by qualification plus owner validation.
+- **D.** Semrush discovery output is **candidate evidence only**.
+  - It enters the normal M3.2 pipeline (filtering → normalization → topics → qualification → owner review).
+  - It never creates approved Search Topics directly.
+  - It never bypasses qualification or owner review.
+- **E.** The system must **not depend on any single Semrush discovery report**: broad match, questions, related keywords or any other. The tested `phrase_related` returned `NOTHING FOUND` for an IL seed, and `phrase_questions` returned no commercially relevant rows. A missing or empty discovery report means fewer candidates from that source, nothing more.
+- **F.** Enrichment of known candidates uses low-cost single-keyword metrics (e.g. `phrase_this` or an equivalent) and is the cheapest, most reliable Semrush capability observed. Discovery reports are priced per row (observed: 20–40 units per row) and are run explicitly and bounded.
+- **G.** Search volume is evidence, not strategy (§9).
+- **H.** A provider metric is not read literally when data quality is weak. For example, **KD = 0 does not mean "easy to rank"**, and an empty intent does not mean "no intent".
+- **I.** Provider evidence (discovered candidates and metrics alike) carries **provenance**:
+  - provider, report, database/country, period, retrieval time, units;
+  - where appropriate, a **data-quality / confidence assessment** (e.g. placeholder-looking KD, empty intent, bucketed or zero volume, short trend history).
+- **J.** The system keeps these separate, and none substitutes for another:
+  - **market evidence**: what a provider reported (candidates, demand estimates; not observed Google traffic);
+  - **inferred / estimated demand**: derived by the system;
+  - **strategic relevance**: business fit, owner priority;
+  - **GSC visibility**: what this site actually received in Search Console;
+  - **owner approval**: the owner's decision on a topic;
+  - plus the **confidence in each measurement**.
+
+  (§9, §22.)
+- **K.** Missing Semrush data (no row, `NOTHING FOUND`, zero or empty volume) **never proves that demand does not exist**. It is "unknown", never "zero demand".
+- **L.** Semrush stays **replaceable**.
+  - The OS data model stays provider-neutral (§33).
+  - Provider field names, report names and units stay inside the adapter.
+- **M.** Semrush access through MCP, if adopted, sits **behind a provider adapter / service boundary** owned by the application.
+  - Claude Code, or any interactive agent session, is not part of the application's runtime architecture.
+  - Agent-session MCP access is for research and evaluation only.
+
 ---
 
 # 34. Universal API Governance
@@ -1284,6 +1379,7 @@ If cache lookup, quota lookup or governance infrastructure fails, the system mus
 - **Balance check.** `visibilityGetSemrushBalance` (admin-only, POST) makes only Semrush's documented **free** balance request, `GET https://www.semrush.com/users/countapiunits.html?key=…` (Semrush *API unit balance*: "free API requests"; "Last updated: August 5, 2026"). It is independent of the V3 adapter, is bound to `SEMRUSH_API_KEY` on that function only, and never returns, logs or stores the key.
 - **Balance snapshots.** Each successful check appends one document to `semrushBalanceSnapshots`, with `{balance, checkedAt, source: "semrush_free_balance_check"}`. Documents are never overwritten. A snapshot is the authoritative balance at that moment. The opening balance after a renewal, later balances and deltas are derived by ordering snapshots by `checkedAt`.
 - **Paid usage** remains tracked in `apiUsage` through the governor. The **Semrush API Query Log** (query, time, database, report type, requested rows, report cost, remaining units) is the external source for reconciling our ledger.
+- **MCP vs REST (2026-10-14).** The owner reports that the account's 50,000 units are **Semrush MCP API units**, and that it has **no Semrush Standard API entitlement**. This is consistent with the V4 REST Keyword Metrics pilot call returning HTTP 403 (#61). A controlled MCP evaluation then succeeded (§33.1). Report costs observed through MCP: `phrase_this` 10 units per keyword, `phrase_fullsearch` 20 per row, `phrase_questions` 40 per row. These figures come from MCP response metadata on 2026-10-14 and are re-verified before budgeting.
 - **No monthly allowance is inferred yet.** Semrush units renew on the plan's renewal day, not on a calendar month. The governor's current "month" is a rolling 30 days that counts requests, not units. A unit budget tied to the billing cycle is future work, to be based on observed snapshots.
 
 ### Current production-readiness note
@@ -2419,6 +2515,7 @@ At the time of this document refresh:
 - Google updated generative-AI content guidance in October 2026 and its spam policies apply to generative-AI responses as well as classic Search.
 - FAQ rich results were deprecated beginning May 7, 2026.
 - Semrush's current API documentation recommends v4 for new Keyword Reports integrations; v3 Keyword Reports are deprecated, while non-migrated reports remain available in v3.
+- Semrush MCP (observed 2026-10-14, database `il`): single-keyword metrics are available at low unit cost. Broad-match and question discovery works, but for Hebrew it was sparse and noisy (KD 0, empty intent, bucketed volumes, short trend histories), and semantic related-keyword discovery returned no data for the tested seed. Discovery output is useful as candidate evidence, not authority (§33.1).
 
 These facts are external and time-sensitive. They must be re-verified rather than treated as permanent truths.
 
