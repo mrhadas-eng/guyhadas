@@ -5,7 +5,7 @@ const assert = require("assert");
 const path = require("path");
 const fs = require("fs");
 const { createFakeFirestore, loadWithFake } = require("./helpers/fakeFirestore");
-const { detect, dedupeKey, confidenceOf, band } = require("../opportunityRules");
+const { detect, dedupeKey, confidenceOf, band, buildContext, visibilityOf } = require("../opportunityRules");
 const { DEFAULT_WEIGHTS, resolveWeights } = require("../opportunityConfig");
 
 const STORE = path.join(__dirname, "..", "opportunityEngineStore.js");
@@ -635,10 +635,181 @@ const withDemandSample = (f) => {
   await test("DT6 the guard is provider-neutral and lives in config", () => {
     const cfg = require("../opportunityConfig");
     assert.strictEqual(cfg.THRESHOLDS.minDemandTierSample, 4);
-    assert.strictEqual(cfg.CONFIG_VERSION, 3, "config change is part of the cache identity");
+    assert.ok(cfg.CONFIG_VERSION >= 3, "config change is part of the cache identity (3 = #55; later versions add #64)");
     const src = fs.readFileSync(path.join(__dirname, "..", "opportunityRules.js"), "utf8");
     const guard = src.slice(src.indexOf("const demandSample"), src.indexOf("const minImpr"));
     assert.ok(!/semrush/i.test(guard), "sample guard does not reference a provider");
+  });
+
+  // ---------------- #64 observed-visibility tier: minimum sample ----------------
+  const GSC_TOPICS = ["tRank", "tCtr", "tOverlap", "tHealthy"]; // approved topics with GSC impressions in the base fixture
+  // positive: { topicId: impressions } for base GSC topics (absent -> no_observation, no observed pages);
+  // extra: [[id, impressions]] adds approved topics with impressions and no pages.
+  function visInput(positive, extra = []) {
+    const f = fixture();
+    f.topicIntel = f.topicIntel.map((x) => {
+      if (!GSC_TOPICS.includes(x.topicId)) return x;
+      const v = positive[x.topicId];
+      if (v == null || v === 0) return { ...x, gscCurrent: { status: "no_observation", period: PERIOD }, pages: { ...x.pages, observed: [] } };
+      const clicks = Math.min(x.gscCurrent.clicks, v);
+      return { ...x, gscCurrent: { ...x.gscCurrent, impressions: v, clicks, ctr: clicks / v } };
+    });
+    for (const [id, v] of extra) {
+      f.searchTopics.push({ id, businessId: BIZ, title: id, status: "relevant" });
+      f.topicIntel.push(ti(id, `נושא ${id}`, gsc(v, 1, 15, [])));
+    }
+    return { business: { id: BIZ, ...f.business }, run: f.run, topicIntel: f.topicIntel, searchTopics: f.searchTopics, seoPages: f.seoPages, baseline: f.baseline };
+  }
+  const runVis = (positive, extra) => detect(visInput(positive, extra), DEFAULT_WEIGHTS);
+  const visOf = (o) => o.factors.find((x) => x.key === "observedVisibility");
+  const oppOf = (r, type, topic) => r.opportunities.find((o) => o.type === type && o.targetTopicIds.includes(topic));
+  // previous rule, to prove adequate samples are unchanged
+  const legacyImpr = (input) => {
+    const statusById = new Map(input.searchTopics.map((t) => [t.id, t.status]));
+    return input.topicIntel.filter((x) => !x.superseded && ["relevant", "priority", "brand_strategic"].includes(statusById.get(x.topicId))).map((x) => (x.gscCurrent && x.gscCurrent.status === "available" ? x.gscCurrent.impressions || 0 : x.gscCurrent && x.gscCurrent.status === "no_observation" ? 0 : null)).filter((x) => x != null);
+  };
+  const legacyLow = (vals) => { const v = vals.filter((x) => x > 0).sort((a, b) => a - b); return v.length ? v[Math.floor((v.length - 1) / 3)] : 0; };
+  const assertUntiered = (f, impressions, label) => {
+    assert.strictEqual(f.level, null, `${label}: no relative tier`);
+    assert.strictEqual(f.basis, "insufficient_sample", label);
+    if ("contribution" in f) assert.strictEqual(f.contribution, null, `${label}: excluded from the score`);
+    assert.ok(f.explanation.includes(String(impressions)) && f.explanation.includes("לא דורג") && f.explanation.includes("Search Console"), f.explanation);
+  };
+
+  await test("VT0 zero positive-impression topics: no tiers, minImpr = absolute floor, gaps unchanged", () => {
+    const input = visInput({});
+    const ctx = buildContext(input);
+    assert.strictEqual(ctx.visibilitySample, 0);
+    assert.strictEqual(ctx.visibilityTiered, false);
+    assert.strictEqual(ctx.imprT, null);
+    const r = detect(input, DEFAULT_WEIGHTS);
+    assert.strictEqual(r.context.minImpressions, 20);
+    assert.ok(!r.opportunities.some((o) => o.factors.some((f) => f.key === "observedVisibility" && f.basis === "insufficient_sample")), "nothing positive to untier");
+    const gap = oppOf(r, "coverage_gap", "tGap");
+    assert.ok(gap && visOf(gap).notApplicable, "coverage gap keeps visibility not-applicable");
+  });
+
+  await test("VT1 one positive topic: ranking_upside kept, visibility untiered with provenance, own reason, minImpr floor", () => {
+    const r = runVis({ tRank: 400 });
+    const rank = oppOf(r, "ranking_upside", "tRank");
+    assert.ok(rank, "ranking opportunity still detected (400 >= 20)");
+    assertUntiered(visOf(rank), 400, "tRank");
+    assert.ok(visOf(rank).explanation.includes("1 נושאים"), visOf(rank).explanation);
+    assert.strictEqual(rank.signals.visibility.source, "search_console");
+    assert.strictEqual(rank.signals.visibility.impressions, 400, "observation preserved");
+    assert.strictEqual(rank.signals.visibility.tierStatus, "insufficient_sample");
+    assert.ok(rank.missing.includes("factor_untiered_insufficient_sample:observedVisibility"));
+    assert.ok(!rank.missing.includes("factor_unknown:observedVisibility"), "distinct from unknown");
+    assert.ok(rank.confidenceReasons.some((x) => x.includes("אין מספיק נושאים להשוואה") && x.includes("נראות שנמדדה")), rank.confidenceReasons.join(" | "));
+    assert.strictEqual(r.context.minImpressions, 20, "old rule would have made the topic's own 400 the threshold");
+  });
+
+  await test("VT2 two positive topics: ctr_upside kept with untiered visibility", () => {
+    const r = runVis({ tRank: 400, tCtr: 300 });
+    const ctr = oppOf(r, "ctr_upside", "tCtr");
+    assert.ok(ctr, "CTR opportunity still detected");
+    assertUntiered(visOf(ctr), 300, "tCtr");
+    assert.strictEqual(ctr.factors.find((f) => f.key === "upside").level, 3, "upside (observed CTR gap) unchanged");
+    assertUntiered(visOf(oppOf(r, "ranking_upside", "tRank")), 400, "tRank");
+    assert.strictEqual(r.context.minImpressions, 20);
+  });
+
+  await test("VT3 three positive topics: overlap kept (capped low), visibility untiered", () => {
+    const r = runVis({ tRank: 400, tCtr: 300, tOverlap: 200 });
+    const ov = oppOf(r, "page_overlap_observed", "tOverlap");
+    assert.ok(ov, "overlap observation still detected");
+    assertUntiered(visOf(ov), 200, "tOverlap");
+    assert.strictEqual(ov.priority, "low", "overlap stays capped at low");
+    assert.strictEqual(ov.factors.find((f) => f.key === "upside").level, 1);
+    assert.strictEqual(r.context.minImpressions, 20, "old rule: 200");
+  });
+
+  await test("VT4 exactly four positive topics (base fixture): tiers and minImpr identical to the previous rule", () => {
+    const input = visInput({ tRank: 400, tCtr: 300, tOverlap: 200, tHealthy: 900 });
+    const vals = legacyImpr(input);
+    const ctx = buildContext(input);
+    assert.strictEqual(ctx.visibilitySample, 4);
+    assert.strictEqual(ctx.visibilityTiered, true);
+    assert.strictEqual(ctx.minImpr, Math.max(20, legacyLow(vals)));
+    for (const x of input.topicIntel.filter((t) => GSC_TOPICS.includes(t.topicId))) {
+      const v = visibilityOf(x, ctx);
+      assert.strictEqual(v.basis, "observed", x.topicId);
+      assert.strictEqual(v.level, legacyTier(x.gscCurrent.impressions, vals), `${x.topicId}: same tier as before`);
+    }
+    const rank = oppOf(detect(input, DEFAULT_WEIGHTS), "ranking_upside", "tRank");
+    assert.strictEqual(rank.signals.visibility.tierStatus, "tiered");
+  });
+
+  await test("VT5 seven-plus positive topics: tiers and minImpr identical to the previous rule", () => {
+    const input = visInput({ tRank: 400, tCtr: 300, tOverlap: 200, tHealthy: 900 }, [["x1", 50], ["x2", 600], ["x3", 1200]]);
+    const vals = legacyImpr(input);
+    const ctx = buildContext(input);
+    assert.strictEqual(ctx.visibilitySample, 7);
+    assert.strictEqual(ctx.minImpr, Math.max(20, legacyLow(vals)));
+    for (const x of input.topicIntel.filter((t) => t.gscCurrent && t.gscCurrent.status === "available")) {
+      const v = visibilityOf(x, ctx);
+      if (x.topicId === "tNew") continue; // not approved
+      assert.strictEqual(v.level, legacyTier(x.gscCurrent.impressions, vals), x.topicId);
+    }
+  });
+
+  await test("VT6 no_observation (and available with 0 impressions) stays observed level 0 in sparse and adequate samples", () => {
+    for (const positive of [{ tRank: 400 }, { tRank: 400, tCtr: 300, tOverlap: 200, tHealthy: 900 }]) {
+      const input = visInput(positive);
+      const ctx = buildContext(input);
+      const gap = input.topicIntel.find((t) => t.topicId === "tGap");
+      const v = visibilityOf(gap, ctx);
+      assert.strictEqual(v.level, 0);
+      assert.strictEqual(v.basis, "observed");
+      const zero = visibilityOf({ gscCurrent: { status: "available", impressions: 0, period: PERIOD } }, ctx);
+      assert.strictEqual(zero.level, 0, "observed zero, never untiered");
+      assert.notStrictEqual(zero.basis, "insufficient_sample");
+    }
+  });
+
+  await test("VT7 positive topic below the absolute floor: untiered when sparse, never passes the threshold", () => {
+    const r = runVis({ tRank: 12 });
+    assert.ok(!oppOf(r, "ranking_upside", "tRank"), "12 < 20: no ranking opportunity");
+    const ev = r.topicEvaluations.find((e) => e.topicId === "tRank");
+    assert.strictEqual(ev.outcome, "NO_ACTION");
+    assert.ok(ev.reasons.some((x) => x.includes("12 חשיפות") && x.includes("(20)")), ev.reasons.join(" | "));
+    assertUntiered(visibilityOf(visInput({ tRank: 12 }).topicIntel.find((t) => t.topicId === "tRank"), buildContext(visInput({ tRank: 12 }))), 12, "tRank");
+    // adequate sample: same gating as before (threshold max(20, lower tercile))
+    const adequate = visInput({ tRank: 12, tCtr: 300, tOverlap: 200, tHealthy: 900 });
+    assert.strictEqual(buildContext(adequate).minImpr, Math.max(20, legacyLow(legacyImpr(adequate))));
+    assert.ok(!oppOf(detect(adequate, DEFAULT_WEIGHTS), "ranking_upside", "tRank"));
+  });
+
+  await test("VT8 gating is unchanged for sparse samples: >= 20 passes exactly as under the old self-threshold", () => {
+    for (const v of [20, 25, 400]) assert.ok(oppOf(runVis({ tRank: v }), "ranking_upside", "tRank"), `${v} impressions`);
+    assert.ok(!oppOf(runVis({ tRank: 19 }), "ranking_upside", "tRank"), "19 < 20");
+  });
+
+  await test("VT9 minImpr uses the absolute floor whenever the sample is insufficient (1, 2, 3 positive topics)", () => {
+    for (const positive of [{ tRank: 400 }, { tRank: 400, tCtr: 300 }, { tRank: 400, tCtr: 300, tOverlap: 200 }]) {
+      const input = visInput(positive);
+      assert.strictEqual(buildContext(input).minImpr, 20, JSON.stringify(positive));
+      assert.ok(legacyLow(legacyImpr(input)) > 20, "the old rule would have used a self-derived threshold");
+    }
+  });
+
+  await test("VT10 market demand (#55) is unaffected; untiered demand + untiered visibility cost one confidence step", () => {
+    const r = runVis({ tRank: 400 });
+    const rank = oppOf(r, "ranking_upside", "tRank");
+    const md = rank.factors.find((f) => f.key === "marketDemand");
+    assert.strictEqual(md.basis, "insufficient_sample", "base fixture demand sample (1) still untiered as in #55");
+    assert.strictEqual(rank.signals.marketDemand.tierStatus, "insufficient_sample");
+    assert.strictEqual(confidenceOf({ gscAvailable: true, unknownFactors: [], untieredFactors: ["marketDemand", "observedVisibility"], hasBaseline: true }).confidence, "medium");
+    const cfg = require("../opportunityConfig");
+    assert.strictEqual(cfg.THRESHOLDS.minDemandTierSample, 4);
+    assert.strictEqual(cfg.THRESHOLDS.minVisibilityTierSample, 4);
+    assert.strictEqual(cfg.CONFIG_VERSION, 4);
+    assert.deepStrictEqual(cfg.DEFAULT_WEIGHTS, { businessRelevance: 3, commercialValue: 2, marketDemand: 2, observedVisibility: 2, upside: 3, effortInverse: 1 }, "weights unchanged");
+    assert.strictEqual(cfg.THRESHOLDS.highBand, 75);
+    assert.strictEqual(cfg.THRESHOLDS.mediumBand, 50);
+    const src = fs.readFileSync(path.join(__dirname, "..", "opportunityRules.js"), "utf8");
+    const guard = src.slice(src.indexOf("const visibilitySample"), src.indexOf("const demandSample"));
+    assert.ok(!/semrush|search_console|google/i.test(guard), "sample guard is provider-neutral");
   });
 
   await test("determinism: same input -> identical detection output", async () => {

@@ -11,7 +11,7 @@
 // calibration).
 
 const ENGINE_VERSION = 1;
-const CONFIG_VERSION = 3; // 2: market demand separated from observed visibility; 3: minimum sample for relative demand tiers (#55)
+const CONFIG_VERSION = 4; // 2: market demand separated from observed visibility; 3: minimum sample for relative demand tiers (#55); 4: same for observed-visibility tiers and minImpr (#64)
 
 // marketDemand = external market demand (Semrush or another demand
 // provider) - unknown when unavailable, never derived from Search Console.
@@ -38,8 +38,16 @@ const THRESHOLDS = Object.freeze({
   ctrPositionMax: 10,
   ctrShareOfSite: 0.5,
   // Minimum impressions for visibility-based rules: the higher of this
-  // absolute floor and the business's own lower-tercile of topic impressions.
+  // absolute floor and the business's own lower-tercile of topic impressions
+  // (the tercile is used only when the visibility sample is adequate, below).
   minImpressionsAbsolute: 20,
+  // Same principle as minDemandTierSample, for Search Console impressions:
+  // relative visibility tiers (and the lower-tercile part of the impressions
+  // threshold) need at least this many approved topics with positive
+  // impressions. Below it a positive value is kept but UNTIERED (basis
+  // "insufficient_sample") and the threshold is the absolute floor. An
+  // observed zero is still level 0. Sample-size ASSUMPTION (#64).
+  minVisibilityTierSample: 4,
   // Market demand is tiered RELATIVE to the business's other approved topics
   // (terciles of positive volumes). Below this many topics with positive
   // demand the tiers are not meaningful (with 1-2 values both cut points are
