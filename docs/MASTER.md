@@ -2182,10 +2182,14 @@ Clarification: signal state, outcome and attribution live in `experimentOutcomes
 
 - page briefs
 - content workflows
+- content portfolio / release planning
+- cluster / silo / semantic-graph sequencing
+- content velocity guardrails
 - internal linking
 - schema
-- authority workflows
+- authority prospecting / outreach workflows
 - governed publishing
+- measurement-gated content waves
 
 ### M12 — Expanded GEO
 
@@ -2329,6 +2333,133 @@ The future site-architecture model should combine:
 
 Do not encode a rigid silo or "link juice ladder" model.
 
+#### Authority Acquisition & Outreach
+
+A future execution layer should support ethical, evidence-driven authority acquisition rather than treating backlinks as a bulk acquisition target.
+
+Flow:
+
+~~~text
+SEO / GEO ANALYSIS
+  ↓
+AUTHORITY OPPORTUNITY
+  ↓
+PROSPECT DISCOVERY
+  ↓
+PROSPECT QUALIFICATION
+  ↓
+OUTREACH STRATEGY
+  ↓
+PERSONALIZED OUTREACH
+  ↓
+CADENCE
+  ↓
+RESPONSE / RELATIONSHIP TRACKING
+  ↓
+LINK / CITATION ACQUISITION
+  ↓
+MEASUREMENT
+  ↓
+LEARNING
+~~~
+
+The system should retain prospect relevance, reason for reference, likely target page, value proposition, contact/source information, outreach state, relationship state, link/citation state, quality/relevance assessment and evidence.
+
+It should generate a personalized outreach brief and, where appropriate, a configurable cadence such as INITIAL → FOLLOW-UP → FINAL FOLLOW-UP → STOP.
+
+Sending outreach must remain governed by explicit owner-approved campaign policy. The OS must not silently launch automated mass outreach.
+
+Authority acquisition must focus on earned relevance and useful relationships, not automated link spam, bulk directory submission, excessive reciprocal linking, or paid-link manipulation.
+
+#### Content Portfolio & Publishing Orchestration
+
+A future Content / Execution layer must introduce a controlled portfolio and release-planning stage between opportunity selection and publication.
+
+~~~text
+OPPORTUNITIES
+  ↓
+DECISIONS
+  ↓
+CONTENT CANDIDATES
+  ↓
+CONTENT PORTFOLIO
+  ↓
+CLUSTER / SILO / SEMANTIC GRAPH
+  ↓
+PRIORITIZATION
+  ↓
+RELEASE WAVES
+  ↓
+CONTENT CREATION
+  ↓
+QUALITY REVIEW
+  ↓
+PUBLISH
+  ↓
+OBSERVE → MEASURE → LEARN
+~~~
+
+Opportunity volume must not be translated directly into publication volume. If the system discovers hundreds of candidate queries/pages, it should group them into coherent clusters, map them to existing or proposed canonical owners, and produce a staged release plan rather than a bulk publication instruction.
+
+Planning should consider:
+
+- approved Search Topics and SERP Term Universe / query families
+- intent and canonical ownership
+- cluster / silo / hierarchy position
+- semantic relationships
+- business priority and commercial value
+- demand, trend and current visibility
+- cannibalization and duplication risk
+- evidence and content uniqueness potential
+- internal-link dependencies
+- site maturity and recent publishing velocity
+- implementation and review capacity
+- seasonality
+- observation windows
+- previous publishing outcomes
+
+The planner should be able to return:
+
+~~~text
+PUBLISH NOW
+PUBLISH NEXT
+WAIT FOR MEASUREMENT
+WAIT FOR DEPENDENCY
+HOLD FOR REVIEW
+DO NOT CREATE
+~~~
+
+Release waves should preserve dependencies, for example foundational service page → supporting informational content → consideration/comparison content → local/entity expansion → broader expansion.
+
+The OS should use project-level content velocity guardrails rather than a universal fixed page-per-day limit. Guardrails should respond to site maturity, quality and duplication signals, indexing/discovery behavior, recent release velocity, cluster readiness, evidence strength, capacity and measured results.
+
+### Quality gates before publication
+
+Before a page enters a release wave, the future system should validate:
+
+1. It has a legitimate reason to exist.
+2. The intent is not better owned by an existing page.
+3. It adds distinct user value.
+4. Required evidence/source material exists where needed.
+5. It is sufficiently original and useful.
+6. It fits the information architecture and semantic graph.
+7. Internal-link relationships are defined.
+8. Schema/technical requirements are known.
+9. Avoidable duplication/cannibalization risk is acceptable.
+10. A measurement baseline and observation window can be defined.
+
+### Scaled-content safety guardrail
+
+The system must explicitly guard against scaled content abuse. Google's current guidance states that generating many pages with AI or similar tools without adding user value may violate the scaled-content-abuse spam policy. Page count itself is not the policy threshold; the problem is mass production whose purpose and output do not provide sufficient user value.
+
+Therefore:
+
+> The OS must never use raw opportunity count as a publication instruction.
+
+Content scale must emerge from demand, distinct intent, user value, evidence, site readiness, quality and observed results.
+
+This guardrail applies even when autonomous content-generation capabilities are introduced later.
+
 ### Future growth domains
 
 The same operating-system architecture may later extend to:
@@ -2391,6 +2522,8 @@ Existing legacy calendar/email functions must not silently become the pattern fo
 20. No action is a valid system outcome.
 21. Time-sensitive external SEO/GEO/API assumptions must be freshness-verified against current evidence before they drive a major milestone implementation.
 22. The system must preserve whether a claim is current fact, observed behavior, inference, hypothesis, or historical practice; stale claims must not silently become architecture.
+23. Opportunity volume must never be translated directly into publication volume; content creation must pass through portfolio planning, release waves, quality gates and measurement.
+24. Large-scale content generation must be governed by user value, distinct intent, evidence, quality, site readiness and observed results rather than a raw page-count target.
 
 ---
 
