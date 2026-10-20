@@ -4,7 +4,7 @@ import { StatCard } from "../../../components/StatCard";
 import { Pager, usePagination } from "../../../components/ui/Pager";
 import { StatusPill } from "../../../components/ui/StatusPill";
 import { Disclosure } from "../../../components/ui/Disclosure";
-import { FINDING_TEXT, INFO_ONLY, PRIORITY_DISPLAY, ROLE_LABELS, canonicalState, indexState, internalLinks, pageLabel, pagePriority, pagesCount, presenceState, structuredState, when } from "../../../lib/plainLanguage";
+import { FINDING_TEXT, IMPORTANT, INFO_COPY, ISSUE_COPY, PRIORITY_DISPLAY, REVIEW, ROLE_LABELS, canonicalState, indexState, internalLinks, pageLabel, pagePriority, pagesCount, presenceState, structuredState, when } from "../../../lib/plainLanguage";
 import type { PagePriority } from "../../../lib/plainLanguage";
 import type { StatusTone } from "../../../components/ui/StatusPill";
 import type { SeoPage } from "../../../types";
@@ -38,43 +38,66 @@ function Signal({ tone, text, secondary = false }: { tone: StatusTone; text: str
 }
 
 function PageDetail({ p }: { p: SeoPage }) {
-  const findings = p.diagnostics;
-  const prio = PRIORITY_DISPLAY[pagePriority(p)];
+  const level = pagePriority(p);
+  const prio = PRIORITY_DISPLAY[level];
+  // Findings that make the row red/yellow, most serious first.
+  const issues = [...p.diagnostics.filter((d) => IMPORTANT.has(d.code)), ...p.diagnostics.filter((d) => REVIEW.has(d.code))];
+  const info = p.diagnostics.filter((d) => !IMPORTANT.has(d.code) && !REVIEW.has(d.code));
+  const idx = indexState(p.indexability.state);
   return (
     <div className="row-detail">
       <div className="detail-status">
         <StatusPill tone={prio.tone}>{prio.text}</StatusPill>
         <span>{prio.help}</span>
       </div>
-      <div className="detail-note" style={{ marginTop: 0, marginBottom: 8 }}>
-        {p.indexability.state === "indexable"
-          ? "לפי הסריקה, אין בדף מניעה טכנית להיכלל בגוגל. זה לא אומר ש-Google כבר כלל אותו בפועל."
-          : p.indexability.state === "non_indexable"
-            ? "לפי הסריקה, יש בדף מניעה טכנית שבגללה הוא לא יכול להיכלל בגוגל."
-            : "לא ניתן היה לקבוע מהסריקה אם הדף יכול להיכלל בגוגל."}
-      </div>
-      <div className="detail-label">מה נמצא בדף</div>
-      {findings.length ? (
-        <ul className="plain-list">
-          {findings.map((d) => (
-            <li key={d.code}>
-              {FINDING_TEXT[d.code] || d.code}
-              {d.basis === "inferred" ? " (הסקת מערכת)" : ""}
-              {INFO_ONLY.has(d.code) ? <span className="text-dim"> · לידיעה בלבד</span> : null}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div>לא נמצאו בעיות בדף הזה.</div>
+
+      {issues.length > 0 ? (
+        <section className="detail-section">
+          <h5 className="detail-heading">{level === "important" ? "מה מצאנו" : "מה כדאי לבדוק"}</h5>
+          <ul className="issue-list">
+            {issues.map((d) => {
+              const c = ISSUE_COPY[d.code];
+              return (
+                <li key={d.code} className={`issue-item ${IMPORTANT.has(d.code) ? "bad" : "warn"}`}>
+                  <div><strong>{c ? c.label : "ממצא"}:</strong> {c ? c.found : FINDING_TEXT[d.code] || d.code}</div>
+                  {c && <div className="issue-why">למה זה חשוב: {c.why}</div>}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {info.length > 0 && (
+        <section className="detail-section info">
+          <h5 className="detail-heading muted">לידיעה בלבד</h5>
+          <ul className="info-list">
+            {info.map((d) => (
+              <li key={d.code}>
+                {INFO_COPY[d.code] || FINDING_TEXT[d.code] || d.code}
+                {d.basis === "inferred" ? " (הסקת מערכת)" : ""}
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
-      <div className="detail-grid">
-        <div><div className="detail-label">כותרת</div><div>{p.title || "—"}</div></div>
-        <div><div className="detail-label">כותרת ראשית בתוכן</div><div>{p.h1.join(" · ") || "—"}</div></div>
-        <div><div className="detail-label">תיאור לתוצאות החיפוש</div><div>{p.metaDescription || "—"}</div></div>
-        <div><div className="detail-label">כמות מילים</div><div>{p.wordCount ?? "—"}</div></div>
-        <div><div className="detail-label">דפים באתר שמקשרים לדף הזה</div><div>{p.links.inboundInternalCount === 0 ? "אף דף (מבין הדפים שנבדקו)" : `${pagesCount(p.links.inboundInternalCount)} (מבין הדפים שנבדקו)`}</div></div>
-        <div><div className="detail-label">סוג הדף</div><div>{ROLE_LABELS[p.role.role] || "אחר"}{p.role.basis === "inferred" ? " (הסקת מערכת)" : ""}</div></div>
-      </div>
+
+      <section className="detail-section">
+        <h5 className="detail-heading muted">פרטי הדף</h5>
+        <div className="detail-grid" style={{ marginTop: 0 }}>
+          <div><div className="detail-label">כותרת</div><div>{p.title || "—"}</div></div>
+          <div><div className="detail-label">כותרת ראשית</div><div>{p.h1.join(" · ") || "—"}</div></div>
+          <div><div className="detail-label">תיאור לתוצאות החיפוש</div><div>{p.metaDescription || "—"}</div></div>
+          <div><div className="detail-label">כמות מילים</div><div>{p.wordCount ?? "—"}</div></div>
+          <div><div className="detail-label">דפים באתר שמקשרים לדף הזה</div><div>{p.links.inboundInternalCount === 0 ? "אף דף (מבין הדפים שנבדקו)" : `${pagesCount(p.links.inboundInternalCount)} (מבין הדפים שנבדקו)`}</div></div>
+          <div><div className="detail-label">סוג הדף</div><div>{ROLE_LABELS[p.role.role] || "אחר"}{p.role.basis === "inferred" ? " (הסקת מערכת)" : ""}</div></div>
+          <div>
+            <div className="detail-label">יכול להיכלל בגוגל</div>
+            <div>{idx.text} <span className="text-dim">- לפי הסריקה. לא נבדק אם Google כבר כלל את הדף בפועל.</span></div>
+          </div>
+        </div>
+      </section>
+
       <Disclosure label="פרטים טכניים" tone="technical">
         <ul className="tech-list">
           <li dir="ltr">{p.url}</li>
@@ -85,7 +108,7 @@ function PageDetail({ p }: { p: SeoPage }) {
           <li>structured data: {p.structuredData.state}{p.structuredData.types?.length ? ` (${p.structuredData.types.join(", ")})` : ""}</li>
           <li>links: in {p.links.inboundInternalCount} · out {p.links.outboundInternalCount} · external {p.links.externalCount} · {p.links.scope} · orphan: {p.orphan.state}</li>
           <li>role: {p.role.role} ({p.role.basis}: {p.role.rule})</li>
-          <li>diagnostics: {p.diagnostics.map((d) => d.code).join(", ") || "—"}</li>
+          <li>diagnostics: {p.diagnostics.map((d) => `${d.code}${d.detail ? ` (${d.detail})` : ""}`).join(", ") || "—"}</li>
           <li>crawl: {p.crawlStatus}{p.lastRunReason ? ` · ${p.lastRunReason}` : ""} · {when(p.lastCrawledAtMs)}</li>
         </ul>
       </Disclosure>

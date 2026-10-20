@@ -92,8 +92,8 @@ export function needsAttention(p: SeoPage): boolean {
 //               as "no internal link from the crawled pages" stay visible in
 //               the row details but never raise the level on their own: a
 //               page without inbound links is not automatically a problem.
-const IMPORTANT = new Set(["non_indexable", "blocked_by_robots", "canonical_conflicting", "canonical_points_elsewhere"]);
-const REVIEW = new Set(["title_missing", "h1_missing", "structured_data_invalid"]);
+export const IMPORTANT = new Set(["non_indexable", "blocked_by_robots", "canonical_conflicting", "canonical_points_elsewhere"]);
+export const REVIEW = new Set(["title_missing", "h1_missing", "structured_data_invalid"]);
 // Diagnostics shown in details as information only (no priority effect).
 export const INFO_ONLY = new Set(["no_inbound_from_crawled_pages", "underlinked_candidate", "not_in_sitemap", "structured_data_missing", "meta_description_missing", "meta_description_duplicate", "title_duplicate", "h1_multiple"]);
 
@@ -253,3 +253,56 @@ export const DECISION_TEXT: Record<string, string> = {
 export const fmt = (n: number | null | undefined, d = 0) => (n === null || n === undefined ? "—" : Number(n).toLocaleString("he-IL", { maximumFractionDigits: d }));
 export const pct = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(1)}%`);
 export const when = (ms?: number | null) => (ms ? new Date(ms).toLocaleString("he-IL", { dateStyle: "short", timeStyle: "short" }) : "—");
+
+// ---- row-detail explanations (presentation only) ---------------------------
+// What the owner reads when opening a red/yellow row: a short label, what we
+// found, and why it matters. Keys are the existing diagnostic codes; which
+// codes drive red/yellow is decided by IMPORTANT / REVIEW above (unchanged).
+export const ISSUE_COPY: Record<string, { label: string; found: string; why: string }> = {
+  non_indexable: {
+    label: "הכללה בגוגל",
+    found: "משהו בדף מבקש ממנועי חיפוש לא לכלול אותו, או שהדף לא נטען כרגיל.",
+    why: "כל עוד זה כך, הדף כנראה לא יופיע בתוצאות החיפוש."
+  },
+  blocked_by_robots: {
+    label: "חסימה לסריקה",
+    found: "הגדרות האתר חוסמות ממנועי חיפוש לסרוק את הדף.",
+    why: "דף שמנועי חיפוש לא יכולים לסרוק כמעט לא יופיע בתוצאות."
+  },
+  canonical_conflicting: {
+    label: "כתובת ראשית",
+    found: "הדף מצהיר על כמה כתובות ראשיות שונות.",
+    why: "Google עלול להתבלבל איזו כתובת להציג, ולפצל ביניהן את החשיפה."
+  },
+  canonical_points_elsewhere: {
+    label: "כתובת ראשית",
+    found: "הדף מפנה את Google לכתובת של דף אחר כ״כתובת הראשית״ שלו.",
+    why: "Google יציג כנראה את הדף האחר במקום הדף הזה."
+  },
+  title_missing: {
+    label: "כותרת הדף",
+    found: "לדף אין כותרת (הטקסט שמופיע בלשונית הדפדפן ובתוצאות החיפוש).",
+    why: "בלי כותרת, Google ממציא כותרת בעצמו, ופחות אנשים לוחצים על התוצאה."
+  },
+  h1_missing: {
+    label: "כותרת ראשית",
+    found: "חסרה בדף כותרת ראשית ברורה בראש התוכן.",
+    why: "כותרת ראשית עוזרת לגולשים ולמנועי חיפוש להבין במה הדף עוסק."
+  },
+  structured_data_invalid: {
+    label: "מידע למנועי חיפוש",
+    found: "המידע המובנה בדף פגום ולא ניתן לקריאה.",
+    why: "מנועי חיפוש מתעלמים ממידע פגום, ולכן הוא לא עוזר להבין את העסק."
+  }
+};
+
+export const INFO_COPY: Record<string, string> = {
+  no_inbound_from_crawled_pages: "אין דפים אחרים באתר (מבין שנבדקו) שמקשרים לדף הזה.",
+  underlinked_candidate: "רק דף אחד באתר מקשר לדף הזה.",
+  not_in_sitemap: "הדף לא מופיע ברשימת הדפים שהאתר מגיש למנועי חיפוש (מפת האתר).",
+  structured_data_missing: "אין בדף מידע מובנה שעוזר למנועי חיפוש להבין אותו.",
+  meta_description_missing: "אין לדף תיאור קצר לתוצאות החיפוש.",
+  meta_description_duplicate: "התיאור לתוצאות החיפוש זהה לזה של דפים אחרים.",
+  title_duplicate: "לדף יש אותה כותרת כמו לדפים אחרים באתר.",
+  h1_multiple: "בדף יש יותר מכותרת ראשית אחת."
+};
